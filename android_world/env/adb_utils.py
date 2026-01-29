@@ -17,6 +17,7 @@
 import json
 import os
 import re
+import socket
 import time
 from typing import Any, Callable, Collection, Iterable, Literal, Optional, TypeVar
 import unicodedata
@@ -25,6 +26,69 @@ from android_env import env_interface
 from android_env.components import errors
 from android_env.proto import adb_pb2
 import immutabledict
+
+
+def _is_remote_mode() -> bool:
+  """Check if running in remote/Docker mode."""
+  return os.getenv("ANDROID_CONNECTION_TYPE") == "Remote"
+
+
+def _send_emulator_console_command(command: str, timeout_sec: float = 10.0) -> str:
+  """Send a command to emulator console via telnet.
+
+  In remote/Docker mode, the emulator console may not be accessible via
+  'adb emu' commands. This function connects directly to the emulator
+  console port via TCP socket.
+
+  Args:
+    command: The console command to send (e.g., 'sms send 1234567890 Hello').
+    timeout_sec: Timeout for the socket operation.
+
+  Returns:
+    The response from the emulator console.
+
+  Raises:
+    RuntimeError: If connection or command execution fails.
+  """
+  console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
+  # Default to 5553 for Docker mode (external socat port), 5554 for local emulator
+  console_port = int(os.getenv("ANDROID_CONSOLE_PORT", "5553"))
+
+  try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout_sec)
+    sock.connect((console_host, console_port))
+
+    # Read the initial greeting from emulator console
+    response = b""
+    while True:
+      chunk = sock.recv(4096)
+      response += chunk
+      if b"OK" in chunk or not chunk:
+        break
+
+    # Send the command
+    sock.sendall((command + "\n").encode())
+
+    # Read response
+    response = b""
+    while True:
+      try:
+        chunk = sock.recv(4096)
+        if not chunk:
+          break
+        response += chunk
+        if b"OK" in chunk or b"KO" in chunk:
+          break
+      except socket.timeout:
+        break
+
+    sock.close()
+    return response.decode('utf-8', errors='ignore')
+
+  except Exception as e:
+    logging.error("Failed to send emulator console command '%s': %s", command, e)
+    raise RuntimeError(f"Emulator console command failed: {e}") from e
 
 T = TypeVar('T')
 
@@ -1324,6 +1388,26 @@ def call_emulator(
     adb_pb2.AdbResponse: A response object containing the ADB operation result.
   """
   escaped_phone_number = re.sub(r'[^0-9+]', '', phone_number)
+
+  # In remote mode, use direct console connection instead of 'adb emu'
+  if _is_remote_mode():
+    try:
+      result = _send_emulator_console_command(
+          f'gsm call {escaped_phone_number}', timeout_sec
+      )
+      logging.info('Emulator console response: %s', result)
+      # Create a successful response
+      response = adb_pb2.AdbResponse()
+      response.status = adb_pb2.AdbResponse.Status.OK
+      response.generic.output = result.encode('utf-8')
+      return response
+    except RuntimeError as e:
+      logging.error('Failed to call emulator via console: %s', e)
+      response = adb_pb2.AdbResponse()
+      response.status = adb_pb2.AdbResponse.Status.FAILED_PRECONDITION
+      response.error_message = str(e)
+      return response
+
   adb_args = ['emu', 'gsm', 'call', f'{escaped_phone_number}']
   response = issue_generic_request(adb_args, env, timeout_sec)
   return response
@@ -1403,6 +1487,26 @@ def text_emulator(
     A response object containing the ADB operation result.
   """
   escaped_phone_number = re.sub(r'[^0-9+]', '', phone_number)
+
+  # In remote mode, use direct console connection instead of 'adb emu'
+  if _is_remote_mode():
+    try:
+      result = _send_emulator_console_command(
+          f'sms send {escaped_phone_number} {message}', timeout_sec
+      )
+      logging.info('Emulator console response: %s', result)
+      # Create a successful response
+      response = adb_pb2.AdbResponse()
+      response.status = adb_pb2.AdbResponse.Status.OK
+      response.generic.output = result.encode('utf-8')
+      return response
+    except RuntimeError as e:
+      logging.error('Failed to send SMS via console: %s', e)
+      response = adb_pb2.AdbResponse()
+      response.status = adb_pb2.AdbResponse.Status.FAILED_PRECONDITION
+      response.error_message = str(e)
+      return response
+
   adb_args = [
       'emu',
       'sms',
