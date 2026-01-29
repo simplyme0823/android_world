@@ -18,6 +18,7 @@ import contextlib
 import enum
 import os
 import subprocess
+import threading
 import time
 from typing import Any
 from typing import cast
@@ -33,6 +34,10 @@ from android_world.env import adb_utils
 from android_world.env import representation_utils
 from android_world.utils import file_utils
 import dm_env
+
+
+# Lock for ADB reconnection to prevent concurrent reconnection attempts
+_adb_reconnect_lock = threading.Lock()
 
 
 def _has_wrapper(
@@ -185,36 +190,12 @@ def apply_a11y_forwarder_app_wrapper(
         os.environ.get('ANDROID_SDK_ROOT', '~/Android/Sdk') + '/platform-tools/adb'
     )
     device_name = _get_remote_device_name()
+    adb_server_port = int(os.getenv("ANDROID_ADB_SERVER_PORT", "5037"))
     logging.info(
-        'Remote mode: setting up adb reverse for a11y gRPC port %s on device %s',
-        a11y_port, device_name,
+        'Remote mode: setting up adb reverse for a11y gRPC port %s on device %s (adb server port: %s)',
+        a11y_port, device_name, adb_server_port,
     )
-    try:
-      subprocess.run(
-          [adb_path, '-s', device_name,
-           'reverse', f'tcp:{a11y_port}', f'tcp:{a11y_port}'],
-          capture_output=True, text=True, timeout=10,
-      )
-      # Tell the Forwarder App to connect to localhost instead of 10.0.2.2
-      # so that traffic goes through the adb reverse tunnel back to host A.
-      subprocess.run(
-          [adb_path, '-s', device_name,
-           'shell', 'am', 'broadcast',
-           '-a', 'accessibility_forwarder.intent.action.SET_GRPC',
-           '--es', 'host', 'localhost',
-           '--ei', 'port', str(a11y_port),
-           '-n', 'com.google.androidenv.accessibilityforwarder/com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver'],
-          capture_output=True, text=True, timeout=10,
-      )
-      logging.info(
-          'Remote mode: set Forwarder App gRPC target to localhost:%s',
-          a11y_port,
-      )
-    except Exception as e:
-      logging.warning(
-          'Failed to set up adb reverse for port %s on device %s: %s',
-          a11y_port, device_name, e,
-      )
+    _setup_adb_reverse(adb_path, device_name, a11y_port, adb_server_port)
 
   return wrapper
 
@@ -236,11 +217,23 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
       install_a11y_forwarding_app: bool = True,
   ):
     self._original_env = env
+    self._a11y_port = None
+    self._is_remote = _is_remote_mode()
+    self._adb_path = os.path.expanduser(
+        os.environ.get('ANDROID_SDK_ROOT', '~/Android/Sdk') + '/platform-tools/adb'
+    )
+    self._device_name = _get_remote_device_name() if self._is_remote else None
+    self._adb_server_port = int(os.getenv("ANDROID_ADB_SERVER_PORT", "5037"))
+
     if a11y_method == A11yMethod.A11Y_FORWARDER_APP:
       self._env = apply_a11y_forwarder_app_wrapper(
           env, install_a11y_forwarding_app
       )
       self._env.reset()  # Initializes required server services in a11y wrapper.
+      # Store the a11y port for reconnection
+      if _has_wrapper(self._env, a11y_grpc_wrapper.A11yGrpcWrapper):
+        wrapper = cast(a11y_grpc_wrapper.A11yGrpcWrapper, self._env)
+        self._a11y_port = wrapper.get_port()
     else:
       self._env = env
     self._a11y_method = a11y_method
@@ -263,15 +256,129 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
   def env(self) -> env_interface.AndroidEnvInterface:
     return self._env
 
+  def check_adb_connection(self) -> bool:
+    """Check if ADB connection is alive.
+
+    Returns:
+      True if connected, False otherwise.
+    """
+    if not self._is_remote:
+      # For local emulator, assume always connected
+      return True
+    return _check_adb_connection(
+        self._adb_path, self._device_name, self._adb_server_port
+    )
+
+  def ensure_adb_connection(self) -> bool:
+    """Ensure ADB connection is alive, reconnect if necessary.
+
+    Returns:
+      True if connection is established, False if reconnection failed.
+    """
+    if not self._is_remote:
+      return True
+
+    with _adb_reconnect_lock:
+      if self.check_adb_connection():
+        return True
+
+      logging.warning(
+          'ADB connection lost to device %s, attempting to reconnect...',
+          self._device_name
+      )
+
+      # Reconnect to ADB
+      if not _adb_connect_remote(
+          self._adb_path, self._device_name, self._adb_server_port
+      ):
+        logging.error('Failed to reconnect to ADB device %s', self._device_name)
+        return False
+
+      # Re-establish adb reverse if we have an a11y port
+      if self._a11y_port:
+        if not _setup_adb_reverse(
+            self._adb_path, self._device_name, self._a11y_port, self._adb_server_port
+        ):
+          logging.warning(
+              'Failed to re-establish adb reverse for port %s',
+              self._a11y_port
+          )
+          # Continue anyway, the a11y service might still work
+
+      logging.info('Successfully reconnected to ADB device %s', self._device_name)
+      return True
+
+  def restore_adb_reverse(self) -> bool:
+    """Restore adb reverse mapping if in remote mode.
+
+    This is useful when ADB server was restarted but connection is still alive.
+
+    Returns:
+      True if successful or not in remote mode, False otherwise.
+    """
+    if not self._is_remote or not self._a11y_port:
+      return True
+
+    return _setup_adb_reverse(
+        self._adb_path, self._device_name, self._a11y_port, self._adb_server_port
+    )
+
+  def execute_adb_with_retry(
+      self,
+      adb_func,
+      *args,
+      max_retries: int = 2,
+      **kwargs
+  ):
+    """Execute an ADB function with automatic reconnection on failure.
+
+    Args:
+      adb_func: The ADB function to execute.
+      *args: Positional arguments to pass to the function.
+      max_retries: Maximum number of retry attempts.
+      **kwargs: Keyword arguments to pass to the function.
+
+    Returns:
+      The result of the ADB function.
+
+    Raises:
+      The last exception if all retries fail.
+    """
+    last_exception = None
+    for attempt in range(max_retries + 1):
+      try:
+        return adb_func(*args, **kwargs)
+      except Exception as e:
+        last_exception = e
+        if attempt < max_retries:
+          logging.warning(
+              'ADB operation failed (attempt %d/%d): %s. Attempting to reconnect...',
+              attempt + 1, max_retries + 1, e
+          )
+          if self.ensure_adb_connection():
+            time.sleep(0.5)  # Brief pause before retry
+            continue
+        raise last_exception
+
   def refresh_env(self):
     # pylint: disable=protected-access
     # pytype: disable=attribute-error
     # Reconnect to emulator and reload a11y wrapper in case we lose connection.
-    self._env = get_controller(
+
+    # First ensure ADB connection is alive
+    if self._is_remote:
+      logging.info('Ensuring ADB connection before refreshing environment...')
+      _adb_connect_remote(
+          self._adb_path, self._device_name, self._adb_server_port
+      )
+
+    new_controller = get_controller(
         console_port=self.env._coordinator._simulator._config.emulator_launcher.emulator_console_port,
         adb_path=self.env._coordinator._simulator._config.adb_controller.adb_path,
         grpc_port=self.env._coordinator._simulator._config.emulator_launcher.grpc_port,
-    ).env
+    )
+    self._env = new_controller.env
+    self._a11y_port = new_controller._a11y_port
     # pylint: enable=protected-access
     # pytype: enable=attribute-error
 
@@ -289,6 +396,17 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
     try:
       return self._get_a11y_forest()
     except RuntimeError:
+      # First, try to restore adb reverse mapping (might fix the issue
+      # if ADB server was restarted but connection is still alive)
+      if self._is_remote:
+        logging.info('Attempting to restore adb reverse mapping...')
+        if self.restore_adb_reverse():
+          time.sleep(1.0)
+          try:
+            return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
+          except RuntimeError:
+            pass  # Continue to full refresh
+
       print(
           'Could not get a11y tree. Reconnecting to Android, reinitializing'
           ' AndroidEnv, and restarting a11y forwarding.'
@@ -299,6 +417,9 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
 
   def get_ui_elements(self) -> list[representation_utils.UIElement]:
     """Returns the most recent UI elements from the device."""
+    # Ensure ADB connection before getting UI elements
+    self.ensure_adb_connection()
+
     if self._a11y_method == A11yMethod.A11Y_FORWARDER_APP:
       return representation_utils.forest_to_ui_elements(
           self.get_a11y_forest(),
@@ -339,6 +460,9 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
     Returns:
       The path to the temporary directory containing the file.
     """
+    # Ensure ADB connection before file operation
+    self.ensure_adb_connection()
+
     remote_db_directory = os.path.dirname(remote_db_file_path)
     return file_utils.tmp_directory_from_device(
         remote_db_directory, self.env, timeout_sec
@@ -351,6 +475,8 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
       timeout_sec: Optional[float] = None,
   ) -> None:
     """Pushes a local file to the device."""
+    # Ensure ADB connection before file operation
+    self.ensure_adb_connection()
 
     remote_db_directory = os.path.dirname(remote_db_file_path)
 
@@ -389,12 +515,95 @@ def _get_remote_device_name() -> str:
   return f"{host}:{port}"
 
 
-def _adb_connect_remote(adb_path: str, device_name: str) -> bool:
+def _check_adb_connection(adb_path: str, device_name: str, adb_server_port: int = 5037) -> bool:
+  """Check if ADB connection to device is alive.
+
+  Args:
+    adb_path: Path to adb binary.
+    device_name: Device name in host:port format.
+    adb_server_port: ADB server port to use.
+
+  Returns:
+    True if device is connected and responsive, False otherwise.
+  """
+  try:
+    adb_path = os.path.expanduser(adb_path)
+    cmd = [adb_path, "-P", str(adb_server_port), "-s", device_name, "shell", "echo", "ping"]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+    return result.returncode == 0 and "ping" in result.stdout
+  except Exception as e:
+    logging.warning("ADB connection check failed: %s", e)
+    return False
+
+
+def _setup_adb_reverse(adb_path: str, device_name: str, a11y_port: int, adb_server_port: int = 5037) -> bool:
+  """Set up adb reverse for a11y gRPC port.
+
+  Args:
+    adb_path: Path to adb binary.
+    device_name: Device name in host:port format.
+    a11y_port: The a11y gRPC port to forward.
+    adb_server_port: ADB server port to use.
+
+  Returns:
+    True if setup was successful, False otherwise.
+  """
+  try:
+    adb_path = os.path.expanduser(adb_path)
+    logging.info(
+        'Setting up adb reverse for a11y gRPC port %s on device %s',
+        a11y_port, device_name,
+    )
+
+    # Set up adb reverse
+    result = subprocess.run(
+        [adb_path, '-P', str(adb_server_port), '-s', device_name,
+         'reverse', f'tcp:{a11y_port}', f'tcp:{a11y_port}'],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+      logging.warning('adb reverse failed: %s', result.stderr)
+      return False
+
+    # Tell the Forwarder App to connect to localhost
+    result = subprocess.run(
+        [adb_path, '-P', str(adb_server_port), '-s', device_name,
+         'shell', 'am', 'broadcast',
+         '-a', 'accessibility_forwarder.intent.action.SET_GRPC',
+         '--es', 'host', 'localhost',
+         '--ei', 'port', str(a11y_port),
+         '-n', 'com.google.androidenv.accessibilityforwarder/com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver'],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+      logging.warning('Failed to set Forwarder App gRPC target: %s', result.stderr)
+      return False
+
+    logging.info(
+        'Successfully set up adb reverse and Forwarder App gRPC target to localhost:%s',
+        a11y_port,
+    )
+    return True
+  except Exception as e:
+    logging.warning(
+        'Failed to set up adb reverse for port %s on device %s: %s',
+        a11y_port, device_name, e,
+    )
+    return False
+
+
+def _adb_connect_remote(adb_path: str, device_name: str, adb_server_port: int = 5037) -> bool:
   """Connect to remote ADB device.
 
   Args:
     adb_path: Path to adb binary.
     device_name: Device name in host:port format.
+    adb_server_port: ADB server port to use (default 5037).
 
   Returns:
     True if connection successful, False otherwise.
@@ -403,8 +612,8 @@ def _adb_connect_remote(adb_path: str, device_name: str) -> bool:
     # Expand adb path
     adb_path = os.path.expanduser(adb_path)
 
-    # Execute adb connect
-    cmd = [adb_path, "connect", device_name]
+    # Execute adb connect with specific server port
+    cmd = [adb_path, "-P", str(adb_server_port), "connect", device_name]
     logging.info("Executing: %s", " ".join(cmd))
     result = subprocess.run(
         cmd,
@@ -485,10 +694,16 @@ def get_controller(
   is_remote = _is_remote_mode()
   remote_device_name = _get_remote_device_name() if is_remote else None
 
+  # Get ADB server port from environment variable (default 5037)
+  # Each parallel execution group should use a different ADB server port
+  # to avoid conflicts when one process restarts the ADB server
+  adb_server_port = int(os.getenv("ANDROID_ADB_SERVER_PORT", "5037"))
+  logging.info("Using ADB server port: %d", adb_server_port)
+
   if is_remote:
     logging.info("Running in remote mode, device: %s", remote_device_name)
     # Connect to remote device first
-    _adb_connect_remote(adb_path, remote_device_name)
+    _adb_connect_remote(adb_path, remote_device_name, adb_server_port)
 
   config = config_classes.AndroidEnvConfig(
       task=config_classes.FilesystemTaskConfig(
@@ -500,7 +715,10 @@ def get_controller(
               adb_port=console_port + 1,
               grpc_port=grpc_port,
           ),
-          adb_controller=config_classes.AdbControllerConfig(adb_path=adb_path),
+          adb_controller=config_classes.AdbControllerConfig(
+              adb_path=adb_path,
+              adb_server_port=adb_server_port,
+          ),
       ),
   )
 
