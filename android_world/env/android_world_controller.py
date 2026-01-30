@@ -389,6 +389,45 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
   ) -> android_accessibility_forest_pb2.AndroidAccessibilityForest:
     return get_a11y_tree(self._env, max_retries=max_retries, sleep_duration=sleep_duration)
 
+  def _wait_for_a11y_service_ready(
+      self,
+      max_wait_time: float = 60.0,
+      check_interval: float = 2.0,
+  ) -> bool:
+    """Wait for a11y service to be ready after refresh_env.
+
+    Instead of a fixed sleep, actively probe the service until it responds.
+
+    Args:
+      max_wait_time: Maximum time to wait in seconds.
+      check_interval: Time between checks in seconds.
+
+    Returns:
+      True if service is ready, False if timeout.
+    """
+    start_time = time.time()
+    attempt = 0
+    while time.time() - start_time < max_wait_time:
+      attempt += 1
+      try:
+        # Try a quick probe with minimal retries
+        self._get_a11y_forest(max_retries=1, sleep_duration=0.5)
+        logging.info(
+            f'A11y service ready after {attempt} attempts '
+            f'({time.time() - start_time:.1f}s)'
+        )
+        return True
+      except (RuntimeError, KeyError):
+        logging.debug(
+            f'A11y service not ready yet (attempt {attempt}), waiting...'
+        )
+        time.sleep(check_interval)
+
+    logging.warning(
+        f'A11y service not ready after {max_wait_time}s, proceeding anyway'
+    )
+    return False
+
   def get_a11y_forest(
       self,
   ) -> android_accessibility_forest_pb2.AndroidAccessibilityForest:
@@ -401,19 +440,26 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
       if self._is_remote:
         logging.info('Attempting to restore adb reverse mapping...')
         if self.restore_adb_reverse():
-          time.sleep(1.0)
-          try:
-            return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
-          except RuntimeError:
-            pass  # Continue to full refresh
+          # Wait for a11y service to be ready after restoring adb reverse
+          if self._wait_for_a11y_service_ready(max_wait_time=30.0, check_interval=1.0):
+            try:
+              return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
+            except RuntimeError:
+              pass  # Continue to full refresh
+          # If service not ready, continue to full refresh
 
       print(
           'Could not get a11y tree. Reconnecting to Android, reinitializing'
           ' AndroidEnv, and restarting a11y forwarding.'
       )
       self.refresh_env()
-      time.sleep(3.0)  # Give a11y service time to initialize after reconnect.
-      return self._get_a11y_forest(max_retries=10, sleep_duration=2.0)
+      # Wait for a11y service to be ready instead of fixed sleep
+      if self._wait_for_a11y_service_ready(max_wait_time=60.0, check_interval=2.0):
+        # Service is ready, do a final fetch with minimal retries
+        return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
+      else:
+        # Service not ready after timeout, try anyway with more retries
+        return self._get_a11y_forest(max_retries=10, sleep_duration=2.0)
 
   def get_ui_elements(self) -> list[representation_utils.UIElement]:
     """Returns the most recent UI elements from the device."""

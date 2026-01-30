@@ -33,7 +33,30 @@ def _is_remote_mode() -> bool:
   return os.getenv("ANDROID_CONNECTION_TYPE") == "Remote"
 
 
-def _send_emulator_console_command(command: str, timeout_sec: float = 10.0) -> str:
+def _get_console_port_from_env(env: 'env_interface.AndroidEnvInterface') -> int:
+  """Get the emulator console port from the environment object.
+
+  Args:
+    env: The Android environment interface.
+
+  Returns:
+    The console port number.
+  """
+  try:
+    # pylint: disable=protected-access
+    return env._coordinator._simulator._config.emulator_launcher.emulator_console_port
+    # pylint: enable=protected-access
+  except AttributeError:
+    # Fallback to environment variable if env object doesn't have the config
+    return int(os.getenv("ANDROID_CONSOLE_PORT", "5554"))
+
+
+def _send_emulator_console_command(
+    command: str,
+    timeout_sec: float = 10.0,
+    console_host: str | None = None,
+    console_port: int | None = None,
+) -> str:
   """Send a command to emulator console via telnet.
 
   In remote/Docker mode, the emulator console may not be accessible via
@@ -43,6 +66,8 @@ def _send_emulator_console_command(command: str, timeout_sec: float = 10.0) -> s
   Args:
     command: The console command to send (e.g., 'sms send 1234567890 Hello').
     timeout_sec: Timeout for the socket operation.
+    console_host: The emulator console host. If None, uses environment variable.
+    console_port: The emulator console port. If None, uses environment variable.
 
   Returns:
     The response from the emulator console.
@@ -50,9 +75,11 @@ def _send_emulator_console_command(command: str, timeout_sec: float = 10.0) -> s
   Raises:
     RuntimeError: If connection or command execution fails.
   """
-  console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
-  # Default to 5553 for Docker mode (external socat port), 5554 for local emulator
-  console_port = int(os.getenv("ANDROID_CONSOLE_PORT", "5553"))
+  if console_host is None:
+    console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
+  if console_port is None:
+    # Default to 5553 for Docker mode (external socat port), 5554 for local emulator
+    console_port = int(os.getenv("ANDROID_CONSOLE_PORT", "5553"))
 
   try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1392,8 +1419,12 @@ def call_emulator(
   # In remote mode, use direct console connection instead of 'adb emu'
   if _is_remote_mode():
     try:
+      console_port = _get_console_port_from_env(env)
+      console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
+      logging.info('Using emulator console at %s:%d for gsm call', console_host, console_port)
       result = _send_emulator_console_command(
-          f'gsm call {escaped_phone_number}', timeout_sec
+          f'gsm call {escaped_phone_number}', timeout_sec,
+          console_host=console_host, console_port=console_port
       )
       logging.info('Emulator console response: %s', result)
       # Create a successful response
@@ -1491,8 +1522,12 @@ def text_emulator(
   # In remote mode, use direct console connection instead of 'adb emu'
   if _is_remote_mode():
     try:
+      console_port = _get_console_port_from_env(env)
+      console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
+      logging.info('Using emulator console at %s:%d for sms send', console_host, console_port)
       result = _send_emulator_console_command(
-          f'sms send {escaped_phone_number} {message}', timeout_sec
+          f'sms send {escaped_phone_number} {message}', timeout_sec,
+          console_host=console_host, console_port=console_port
       )
       logging.info('Emulator console response: %s', result)
       # Create a successful response
