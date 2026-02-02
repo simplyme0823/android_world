@@ -90,6 +90,56 @@ def _decode_messages_from_response(response: adb_pb2.AdbResponse) -> list[str]:
   return [m.decode() for m in messages]
 
 
+def wait_for_received_message(
+    env: env_interface.AndroidEnvInterface,
+    phone_number: str,
+    timeout_sec: float = 30.0,
+    poll_interval_sec: float = 1.0,
+) -> list[str]:
+  """Wait for a message from a specific phone number to appear in inbox.
+
+  Args:
+    env: The Android environment interface.
+    phone_number: The phone number to wait for a message from.
+    timeout_sec: Maximum time to wait for the message.
+    poll_interval_sec: Time between polling attempts.
+
+  Returns:
+    List of received messages once the expected message arrives.
+
+  Raises:
+    TimeoutError: If no message from the phone number arrives within timeout.
+  """
+  start_time = time.time()
+  normalized_number = phone_number.replace("-", "").replace(" ", "")
+
+  while time.time() - start_time < timeout_sec:
+    response = adb_utils.issue_generic_request(
+        "shell content query --uri content://sms/inbox".split(), env
+    )
+    messages = _decode_messages_from_response(response)
+
+    if messages:
+      # Check if any message is from the expected phone number
+      for msg in messages:
+        parsed = parse_message(msg)
+        msg_number = parsed.get("address", "").replace("-", "").replace(" ", "")
+        if msg_number == normalized_number:
+          logging.info(
+              "Message from %s received after %.1f seconds",
+              phone_number,
+              time.time() - start_time,
+          )
+          return messages
+
+    time.sleep(poll_interval_sec)
+
+  raise TimeoutError(
+      f"No message from {phone_number} received within {timeout_sec} seconds. "
+      "The emulator may have failed to deliver the SMS."
+  )
+
+
 def was_sent(
     messages: list[str],
     phone_number: str,

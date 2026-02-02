@@ -93,15 +93,21 @@ class SimpleSmsReplyMostRecent(sms_validators.SimpleSMSSendSms):
         most_recent_message,
     )
 
-    # Need to pause to make sure re-enabling notifications happens after the
-    # last text came in
-    time.sleep(5)
+    # Wait for the message to actually arrive in the inbox instead of using
+    # a fixed sleep which can be unreliable.
+    try:
+      received_messages = sms_validators.wait_for_received_message(
+          env.controller,
+          self.params["number"],
+          timeout_sec=30.0,
+      )
+    except TimeoutError as e:
+      adb_utils.enable_headsup_notifications(env.controller)
+      raise ValueError(str(e)) from e
 
     adb_utils.enable_headsup_notifications(env.controller)
 
-    most_recent = sms_validators.parse_message(
-        self._get_received_messages(env.controller)[0]
-    )
+    most_recent = sms_validators.parse_message(received_messages[0])
     if (
         most_recent["address"] != self.params["number"]
         and most_recent["body"] != most_recent_message

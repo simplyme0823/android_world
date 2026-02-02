@@ -238,10 +238,9 @@ def find_and_click_element(
     case_sensitive: Whether to use case sensitivity when determining which UI
       element to tap.
   """
-  # Find text.
-  action = _wait_and_find_click_element(element_text, env, case_sensitive)
+  # Find text and get the UI elements atomically to avoid race condition.
+  action, ui_elements = _wait_and_find_click_element(element_text, env, case_sensitive)
 
-  ui_elements = env.get_ui_elements()
   screen_size = (0, 0)  # Unused, but required.
   execute_adb_action(action, ui_elements, screen_size, env)
 
@@ -251,8 +250,14 @@ def _wait_and_find_click_element(
     env: android_world_controller.AndroidWorldController,
     case_sensitive: bool,
     dist_threshold: int = 1,  # Allow one character difference.
-) -> json_action.JSONAction:
-  """Wait for the screen to update until "element_text" appears."""
+) -> tuple[json_action.JSONAction, list[representation_utils.UIElement]]:
+  """Wait for the screen to update until "element_text" appears.
+
+  Returns:
+    A tuple of (action, ui_elements) where ui_elements is the list that was
+    used to find the element index. This ensures the index is valid for the
+    returned ui_elements list, avoiding race conditions.
+  """
   ui_elements = env.get_ui_elements()
   element, distance = _find_target_element(
       ui_elements, target_text, case_sensitive
@@ -261,7 +266,7 @@ def _wait_and_find_click_element(
   current = time.time()
   while current - start < 10:
     if distance <= dist_threshold:
-      return json_action.JSONAction(action_type='click', index=element)
+      return json_action.JSONAction(action_type='click', index=element), ui_elements
     ui_elements = env.get_ui_elements()
     element, distance = _find_target_element(
         ui_elements, target_text, case_sensitive
