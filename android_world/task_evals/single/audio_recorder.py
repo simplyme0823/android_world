@@ -122,8 +122,7 @@ class AudioRecorderRecordAudioWithFileName(_AudioRecorder):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
-    file_name = self.params["file_name"]
-    full_file_name = file_name + ".m4a"
+    full_file_name = self.params["file_name"]
     exists = file_utils.check_file_or_folder_exists(
         full_file_name, self.create_file_task.data_directory, env.controller
     )
