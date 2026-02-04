@@ -428,38 +428,97 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
     )
     return False
 
+  def _restart_a11y_forwarder(self) -> bool:
+    """Re-enable the AccessibilityForwarder service on the device.
+
+    This is a lightweight recovery for cases where the accessibility service
+    was disrupted (e.g. by uiautomator dump), without doing a full refresh_env.
+
+    Returns:
+      True if the restart commands succeeded, False otherwise.
+    """
+    if not self._a11y_port:
+      return False
+
+    try:
+      adb_path = self._adb_path
+      server_port = str(self._adb_server_port)
+      device_args = ['-s', self._device_name] if self._device_name else []
+
+      # Step 1: Re-enable the accessibility service
+      cmd = [adb_path, '-P', server_port] + device_args + [
+          'shell', 'settings', 'put', 'secure',
+          'enabled_accessibility_services',
+          'com.google.androidenv.accessibilityforwarder/'
+          'com.google.androidenv.accessibilityforwarder.AccessibilityForwarder',
+      ]
+      result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+      if result.returncode != 0:
+        logging.warning('Failed to re-enable a11y service: %s', result.stderr)
+        return False
+
+      logging.info('Re-enabled AccessibilityForwarder service')
+      time.sleep(2.0)  # Give the service time to start
+
+      # Step 2: For remote mode, restore adb reverse + gRPC port broadcast
+      if self._is_remote:
+        _setup_adb_reverse(
+            adb_path, self._device_name, self._a11y_port, self._adb_server_port
+        )
+      else:
+        # For local mode, send the gRPC port broadcast via adb
+        cmd = [adb_path, '-P', server_port] + device_args + [
+            'shell', 'am', 'broadcast',
+            '-a', 'accessibility_forwarder.intent.action.SET_GRPC',
+            '--ei', 'port', str(self._a11y_port),
+            '-n', 'com.google.androidenv.accessibilityforwarder/'
+                  'com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver',
+        ]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+      logging.info('Sent gRPC port %s to AccessibilityForwarder', self._a11y_port)
+      return True
+    except Exception as e:
+      logging.warning('Failed to restart a11y forwarder: %s', e)
+      return False
+
   def get_a11y_forest(
       self,
   ) -> android_accessibility_forest_pb2.AndroidAccessibilityForest:
-    """Returns the most recent a11y forest from the device."""
+    """Returns the most recent a11y forest from the device.
+
+    Recovery strategy (from lightest to heaviest):
+      1. Direct fetch with retries
+      2. Restart AccessibilityForwarder service (handles uiautomator disruption)
+      3. Full environment refresh (handles ADB disconnection / deep failures)
+    """
     try:
       return self._get_a11y_forest()
     except RuntimeError:
-      # First, try to restore adb reverse mapping (might fix the issue
-      # if ADB server was restarted but connection is still alive)
-      if self._is_remote:
-        logging.info('Attempting to restore adb reverse mapping...')
-        if self.restore_adb_reverse():
-          # Wait for a11y service to be ready after restoring adb reverse
-          if self._wait_for_a11y_service_ready(max_wait_time=30.0, check_interval=1.0):
-            try:
-              return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
-            except RuntimeError:
-              pass  # Continue to full refresh
-          # If service not ready, continue to full refresh
+      pass
 
-      print(
-          'Could not get a11y tree. Reconnecting to Android, reinitializing'
-          ' AndroidEnv, and restarting a11y forwarding.'
-      )
-      self.refresh_env()
-      # Wait for a11y service to be ready instead of fixed sleep
-      if self._wait_for_a11y_service_ready(max_wait_time=60.0, check_interval=2.0):
-        # Service is ready, do a final fetch with minimal retries
-        return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
-      else:
-        # Service not ready after timeout, try anyway with more retries
-        return self._get_a11y_forest(max_retries=10, sleep_duration=2.0)
+    # Step 2: Lightweight recovery — re-enable AccessibilityForwarder.
+    # Handles cases where the service was disrupted by external tools
+    # (e.g. uiautomator dump) without needing a full env refresh.
+    # For remote mode this also restores adb reverse + gRPC port broadcast.
+    logging.info('A11y tree fetch failed, attempting to restart AccessibilityForwarder...')
+    if self._restart_a11y_forwarder():
+      if self._wait_for_a11y_service_ready(max_wait_time=15.0, check_interval=1.0):
+        try:
+          return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
+        except RuntimeError:
+          pass
+
+    # Step 3: Full refresh — rebuild the entire android_env + a11y wrapper.
+    print(
+        'Could not get a11y tree. Reconnecting to Android, reinitializing'
+        ' AndroidEnv, and restarting a11y forwarding.'
+    )
+    self.refresh_env()
+    if self._wait_for_a11y_service_ready(max_wait_time=60.0, check_interval=2.0):
+      return self._get_a11y_forest(max_retries=3, sleep_duration=1.0)
+    else:
+      return self._get_a11y_forest(max_retries=10, sleep_duration=2.0)
 
   def get_ui_elements(self) -> list[representation_utils.UIElement]:
     """Returns the most recent UI elements from the device."""
