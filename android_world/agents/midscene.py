@@ -4,11 +4,13 @@
 
 from android_world.agents import base_agent
 from android_world.env import interface
+from android_world.env import representation_utils
 
 import requests
 import os
 import time
-import math
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
 class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
@@ -26,6 +28,9 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     self.step_count = 0
     self.task_status = {}
     self.failed_step_reason = ''
+    self._dom_server = None
+    self._dom_server_url = None
+    self._start_dom_server()
 
   def reset(self, go_home: bool = False) -> None:
     super().reset(go_home)
@@ -54,7 +59,10 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
       device["host"] = os.environ.get("ANDROID_REMOTE_HOST", "localhost")
       device["port"] = adb_port
 
-    self._send_rpc_request("new-agent", {"type": "Android", "device": device, "id": self.current_task_name})
+    rpc_params = {"type": "Android", "device": device, "id": self.current_task_name}
+    if self._dom_server_url:
+      rpc_params["domProviderUrl"] = self._dom_server_url
+    self._send_rpc_request("new-agent", rpc_params)
 
     self.step_count = 0
 
@@ -138,6 +146,40 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     self._formatted_console("RPC Response: " + str(result))
 
     return result
+
+  def _start_dom_server(self):
+    """Starts a background HTTP server that serves the current a11y tree as raw XML."""
+    agent_ref = self
+
+    class DomHandler(BaseHTTPRequestHandler):
+      def do_GET(self):
+        try:
+          state = agent_ref.env.get_state()
+          if state.forest is not None:
+            raw_xml = representation_utils.forest_to_raw_xml(state.forest)
+          else:
+            raw_xml = ''
+          self.send_response(200)
+          self.send_header('Content-Type', 'text/xml; charset=utf-8')
+          self.end_headers()
+          self.wfile.write(raw_xml.encode('utf-8'))
+        except Exception as e:
+          self.send_response(500)
+          self.send_header('Content-Type', 'text/plain')
+          self.end_headers()
+          self.wfile.write(str(e).encode('utf-8'))
+
+      def log_message(self, format, *args):
+        pass  # Suppress default access logs
+
+    server = HTTPServer(('127.0.0.1', 0), DomHandler)
+    port = server.server_address[1]
+    self._dom_server = server
+    self._dom_server_url = f'http://127.0.0.1:{port}/dom'
+    self._formatted_console(f"DOM provider server started at {self._dom_server_url}")
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
 
   def _formatted_console(self, content: str) -> None:
     """Formats the console output."""

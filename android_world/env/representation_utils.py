@@ -175,6 +175,101 @@ def _parse_ui_hierarchy(xml_string: str) -> dict[str, Any]:
   return parse_node(root)
 
 
+def _escape_xml_attr(s: str) -> str:
+  return (s.replace('&', '&amp;')
+           .replace('"', '&quot;')
+           .replace('<', '&lt;')
+           .replace('>', '&gt;'))
+
+
+def _bool_str(val: bool) -> str:
+  return 'true' if val else 'false'
+
+
+def _bounds_str(node: Any) -> str:
+  b = node.bounds_in_screen
+  return f'[{b.left},{b.top}][{b.right},{b.bottom}]'
+
+
+def _raw_xml_node(node: Any, children_by_id: dict[int, list[Any]],
+                  indent: int) -> str:
+  """Format a protobuf node as uiautomator-dump-compatible <node> XML."""
+  pad = '  ' * indent
+  attrs = (
+      f'text="{_escape_xml_attr(node.text or "")}" '
+      f'resource-id="{_escape_xml_attr(node.view_id_resource_name or "")}" '
+      f'class="{_escape_xml_attr(node.class_name or "")}" '
+      f'content-desc="{_escape_xml_attr(node.content_description or "")}" '
+      f'clickable="{_bool_str(node.is_clickable)}" '
+      f'scrollable="{_bool_str(node.is_scrollable)}" '
+      f'selected="{_bool_str(node.is_selected)}" '
+      f'checked="{_bool_str(node.is_checked)}" '
+      f'bounds="{_bounds_str(node)}"'
+  )
+
+  kids = children_by_id.get(node.unique_id, [])
+  if not kids:
+    return f'{pad}<node {attrs} />'
+
+  child_xml = '\n'.join(
+      _raw_xml_node(c, children_by_id, indent + 1) for c in kids
+  )
+  return f'{pad}<node {attrs}>\n{child_xml}\n{pad}</node>'
+
+
+def forest_to_raw_xml(
+    forest: android_accessibility_forest_pb2.AndroidAccessibilityForest | Any,
+) -> str:
+  """Convert accessibility forest to uiautomator-dump-compatible raw XML.
+
+  Produces <node> XML with the same attribute names as uiautomator dump
+  (text, resource-id, class, content-desc, clickable, scrollable, selected,
+  checked, bounds), so midscene's parseXmlToFormatTree can process it
+  identically.
+
+  Args:
+    forest: The accessibility forest protobuf.
+
+  Returns:
+    Raw XML string wrapped in <hierarchy>, or empty string if no data.
+  """
+  parts: list[str] = []
+
+  for window in forest.windows:
+    nodes = list(window.tree.nodes)
+    if not nodes:
+      continue
+
+    # Build id → node map and children lookup
+    node_map: dict[int, Any] = {}
+    children_by_id: dict[int, list[Any]] = {}
+    child_ids_in_use: set[int] = set()
+    for n in nodes:
+      node_map[n.unique_id] = n
+      for cid in n.child_ids:
+        child_ids_in_use.add(cid)
+
+    # Build ordered children lists
+    for n in nodes:
+      kids = []
+      for cid in n.child_ids:
+        if cid in node_map:
+          kids.append(node_map[cid])
+      if kids:
+        children_by_id[n.unique_id] = kids
+
+    # Find root nodes (not referenced as children)
+    roots = [n for n in nodes if n.unique_id not in child_ids_in_use]
+    for root in roots:
+      parts.append(_raw_xml_node(root, children_by_id, 1))
+
+  if not parts:
+    return ''
+
+  body = '\n'.join(parts)
+  return f'<hierarchy rotation="0">\n{body}\n</hierarchy>'
+
+
 def xml_dump_to_ui_elements(xml_string: str) -> list[UIElement]:
   """Converts a UI hierarchy XML dump from uiautomator dump to UIElements."""
   parsed_hierarchy = _parse_ui_hierarchy(xml_string)

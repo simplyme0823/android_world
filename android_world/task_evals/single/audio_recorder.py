@@ -135,7 +135,7 @@ class AudioRecorderRecordAudioWithFileName(_AudioRecorder):
     self.add_validation_log(f'  - Validation result: {exists}')
 
     if not exists:
-      logging.info("%s not found", file_name)
+      logging.info("%s not found", full_file_name)
       return 0.0
     return 1.0
 
