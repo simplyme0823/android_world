@@ -16,6 +16,8 @@
 
 import random
 import time
+
+from absl import logging
 from android_world.env import adb_utils
 from android_world.env import interface
 from android_world.env import tools
@@ -86,24 +88,47 @@ class SimpleSmsReplyMostRecent(sms_validators.SimpleSMSSendSms):
     # to make sure the most recent text comes last.
     time.sleep(5)
 
+    # Send the "most recent" message and verify delivery.
+    # Retry the full send+verify cycle to handle transient emulator issues.
     most_recent_message = self._generate_non_goal_message()
-    adb_utils.text_emulator(
-        env.controller,
-        self.params["number"],
-        most_recent_message,
-    )
+    max_sms_retries = 3
+    received_messages = None
+    for sms_attempt in range(max_sms_retries):
+      try:
+        adb_utils.text_emulator(
+            env.controller,
+            self.params["number"],
+            most_recent_message,
+        )
+      except RuntimeError:
+        logging.warning(
+            'text_emulator failed (attempt %d/%d), retrying...',
+            sms_attempt + 1, max_sms_retries,
+        )
+        time.sleep(2)
+        continue
 
-    # Wait for the message to actually arrive in the inbox instead of using
-    # a fixed sleep which can be unreliable.
-    try:
-      received_messages = sms_validators.wait_for_received_message(
-          env.controller,
-          self.params["number"],
-          timeout_sec=30.0,
-      )
-    except TimeoutError as e:
+      try:
+        received_messages = sms_validators.wait_for_received_message(
+            env.controller,
+            self.params["number"],
+            timeout_sec=30.0,
+        )
+        break  # SMS delivered successfully
+      except TimeoutError:
+        logging.warning(
+            'SMS not received (attempt %d/%d), retrying send+verify...',
+            sms_attempt + 1, max_sms_retries,
+        )
+        time.sleep(2)
+        continue
+
+    if received_messages is None:
       adb_utils.enable_headsup_notifications(env.controller)
-      raise ValueError(str(e)) from e
+      raise ValueError(
+          f"SMS delivery failed after {max_sms_retries} attempts. "
+          "The emulator may have failed to deliver the SMS."
+      )
 
     adb_utils.enable_headsup_notifications(env.controller)
 
@@ -232,16 +257,49 @@ class SimpleSmsSendReceivedAddress(sms_validators.SimpleSMSSendSms):
         self.params["name2"], name2_number, env.controller
     )
 
-    # Add text containing address from name2
-    adb_utils.text_emulator(
-        env.controller,
-        name2_number,
-        self.params["message"],
-    )
+    # Send SMS containing address from name2 and verify delivery.
+    # Retry the full send+verify cycle to handle transient emulator issues,
+    # ensuring the Agent can see the message when the task starts.
+    max_sms_retries = 3
+    sms_delivered = False
+    for sms_attempt in range(max_sms_retries):
+      try:
+        adb_utils.text_emulator(
+            env.controller,
+            name2_number,
+            self.params["message"],
+        )
+      except RuntimeError:
+        logging.warning(
+            'text_emulator failed (attempt %d/%d), retrying...',
+            sms_attempt + 1, max_sms_retries,
+        )
+        time.sleep(2)
+        continue
 
-    # Need to pause to make sure re-enabling notifications happens after the
-    # text came in
-    time.sleep(1)
+      try:
+        sms_validators.wait_for_received_message(
+            env.controller,
+            name2_number,
+            timeout_sec=30.0,
+        )
+        sms_delivered = True
+        break
+      except TimeoutError:
+        logging.warning(
+            'SMS not received (attempt %d/%d), retrying send+verify...',
+            sms_attempt + 1, max_sms_retries,
+        )
+        time.sleep(2)
+        continue
+
+    if not sms_delivered:
+      adb_utils.enable_headsup_notifications(env.controller)
+      raise ValueError(
+          f"SMS delivery failed after {max_sms_retries} attempts. "
+          "The emulator may have failed to deliver the SMS."
+      )
+
     adb_utils.enable_headsup_notifications(env.controller)
 
   def tear_down(self, env: interface.AsyncEnv):

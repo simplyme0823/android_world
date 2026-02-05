@@ -86,16 +86,26 @@ def _send_emulator_console_command(
     sock.settimeout(timeout_sec)
     sock.connect((console_host, console_port))
 
-    # Read the initial greeting from emulator console
-    response = b""
+    # Read the initial greeting from emulator console.
+    # Greeting ends with "OK\r\n". We must fully consume it (including
+    # the trailing \r\n) before sending any command, otherwise leftover
+    # bytes corrupt the next command.
+    greeting = b""
     while True:
       chunk = sock.recv(4096)
-      response += chunk
-      if b"OK" in chunk or not chunk:
+      greeting += chunk
+      if not chunk:
         break
+      # Greeting is fully consumed when we see "OK\r\n" at the end
+      if greeting.rstrip().endswith(b"OK"):
+        break
+    logging.info('Emulator console greeting: %s', greeting.decode('utf-8', errors='ignore').strip())
 
-    # Send the command
-    sock.sendall((command + "\n").encode())
+    # Small delay to ensure the socket buffer is fully drained
+    time.sleep(0.1)
+
+    # Send the command (use \r\n for emulator console telnet protocol)
+    sock.sendall((command + "\r\n").encode())
 
     # Read response
     response = b""
@@ -1521,26 +1531,50 @@ def text_emulator(
 
   # In remote mode, use direct console connection instead of 'adb emu'
   if _is_remote_mode():
-    try:
-      console_port = _get_console_port_from_env(env)
-      console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
-      logging.info('Using emulator console at %s:%d for sms send', console_host, console_port)
-      result = _send_emulator_console_command(
-          f'sms send {escaped_phone_number} {message}', timeout_sec,
-          console_host=console_host, console_port=console_port
-      )
-      logging.info('Emulator console response: %s', result)
-      # Create a successful response
-      response = adb_pb2.AdbResponse()
-      response.status = adb_pb2.AdbResponse.Status.OK
-      response.generic.output = result.encode('utf-8')
-      return response
-    except RuntimeError as e:
-      logging.error('Failed to send SMS via console: %s', e)
-      response = adb_pb2.AdbResponse()
-      response.status = adb_pb2.AdbResponse.Status.FAILED_PRECONDITION
-      response.error_message = str(e)
-      return response
+    console_port = _get_console_port_from_env(env)
+    console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
+    max_retries = 3
+    last_error = None
+    for attempt in range(max_retries):
+      try:
+        logging.info(
+            'Using emulator console at %s:%d for sms send (attempt %d/%d)',
+            console_host, console_port, attempt + 1, max_retries,
+        )
+        result = _send_emulator_console_command(
+            f'sms send {escaped_phone_number} {message}', timeout_sec,
+            console_host=console_host, console_port=console_port
+        )
+        logging.info('Emulator console response: %s', result)
+        if 'KO' in result:
+          last_error = result.strip()
+          logging.warning(
+              'Emulator console returned KO (attempt %d/%d): %s',
+              attempt + 1, max_retries, last_error,
+          )
+          time.sleep(2)
+          continue
+        # Success
+        response = adb_pb2.AdbResponse()
+        response.status = adb_pb2.AdbResponse.Status.OK
+        response.generic.output = result.encode('utf-8')
+        return response
+      except RuntimeError as e:
+        last_error = str(e)
+        logging.warning(
+            'Failed to send SMS via console (attempt %d/%d): %s',
+            attempt + 1, max_retries, last_error,
+        )
+        time.sleep(2)
+        continue
+    # All retries exhausted
+    logging.error(
+        'Failed to send SMS via emulator console after %d attempts: %s',
+        max_retries, last_error,
+    )
+    raise RuntimeError(
+        f'Emulator SMS send failed after {max_retries} attempts: {last_error}'
+    )
 
   adb_args = [
       'emu',
