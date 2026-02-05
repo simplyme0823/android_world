@@ -645,7 +645,7 @@ class MarkorMergeNotes(Markor):
     if not create_success:
       # Collect validation logs
       self.add_validation_log('MarkorMergeNotes Evaluation Details:')
-      self.add_validation_log(f'  - Create file task failed')
+      self.add_validation_log(f'  - Create file task failed, target file: {self.params["new_file_name"]}')
       self.add_validation_log(f'  - Validation result: False')
       return 0.0
     # The CreateFile task is using a fuzzy match in its is_successful function,
