@@ -569,6 +569,22 @@ class OsmAndApp(AppSetup):
           "First time setup did not click through all anticipated screens."
       )
     finally:
+      # Wait for OsmAnd to extract World_basemap_mini.obf from APK assets.
+      # After `pm clear`, OsmAnd re-extracts this ~51MB basemap on first launch.
+      # Without it, map rendering and search results are degraded.
+      basemap_path = file_utils.convert_to_posix_path(
+          cls.DEVICE_MAPS_PATH, "World_basemap_mini.obf"
+      )
+      for i in range(30):
+        if file_utils.check_file_exists(basemap_path, env.controller):
+          logging.info("OsmAnd basemap extracted after %ds.", i)
+          break
+        time.sleep(1)
+      else:
+        logging.warning(
+            "OsmAnd basemap was not extracted within 30s. "
+            "Map search may be degraded."
+        )
       adb_utils.close_app(cls.app_name, env.controller)
 
     # Grant permissions for OsmAnd mapping app.

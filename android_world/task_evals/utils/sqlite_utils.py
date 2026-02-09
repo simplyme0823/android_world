@@ -160,6 +160,9 @@ def delete_all_rows_from_table(
 
     conn = sqlite3.connect(local_db_path)
     cursor = conn.cursor()
+    # Switch from WAL to DELETE journal mode so all changes are written
+    # directly to the main DB file (push_file only sends the main file).
+    cursor.execute("PRAGMA journal_mode=DELETE")
     delete_command = f"DELETE FROM {table_name}"
     cursor.execute(delete_command)
     conn.commit()
@@ -200,6 +203,9 @@ def insert_rows_to_remote_db(
 
     conn = sqlite3.connect(local_db_path)
     cursor = conn.cursor()
+    # Switch from WAL to DELETE journal mode so all changes are written
+    # directly to the main DB file (push_file only sends the main file).
+    cursor.execute("PRAGMA journal_mode=DELETE")
     for row in rows:
       insert_command, values = sqlite_schema_utils.insert_into_db(
           row, table_name, exclude_key

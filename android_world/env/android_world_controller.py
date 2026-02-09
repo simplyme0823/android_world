@@ -594,6 +594,11 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
         timeout_sec,
     )
 
+    # Restore SELinux security context so the app can read the pushed file.
+    adb_utils.issue_generic_request(
+        ["shell", "restorecon", "-R", remote_db_directory], self.env
+    )
+
 
 def _write_default_task_proto() -> str:
   with open(_TASK_PATH, 'w') as f:
