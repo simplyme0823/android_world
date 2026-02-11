@@ -202,6 +202,43 @@ class _OsmTaskEval(task_eval.TaskEval):
 
   app_names = ('osmand',)
 
+  _DEVICE_MAPS_PATH = '/storage/emulated/0/Android/data/net.osmand/files/'
+  _BASEMAP_NAME = 'World_basemap_mini.obf'
+  _BASEMAP_WAIT_SECONDS = 30
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    self._wait_for_basemap(env)
+
+  def _wait_for_basemap(self, env: interface.AsyncEnv) -> None:
+    """Wait for OsmAnd to extract World_basemap_mini.obf if it is missing.
+
+    After snapshot restore or pm clear, OsmAnd re-extracts the basemap from
+    APK assets on first launch. Without it, map search is degraded.
+    """
+    import time
+
+    basemap_path = file_utils.convert_to_posix_path(
+        self._DEVICE_MAPS_PATH, self._BASEMAP_NAME
+    )
+    if file_utils.check_file_exists(basemap_path, env.controller):
+      return
+
+    logging.info('OsmAnd basemap not found, launching app to trigger extraction.')
+    adb_utils.launch_app('osmand', env.controller)
+    for i in range(self._BASEMAP_WAIT_SECONDS):
+      if file_utils.check_file_exists(basemap_path, env.controller):
+        logging.info('OsmAnd basemap extracted after %ds.', i)
+        break
+      time.sleep(1)
+    else:
+      logging.warning(
+          'OsmAnd basemap was not extracted within %ds. '
+          'Map search may be degraded.',
+          self._BASEMAP_WAIT_SECONDS,
+      )
+    adb_utils.close_app('osmand', env.controller)
+
 
 class OsmAndFavorite(_OsmTaskEval):
   """Task for checking that there is a favorite location marker in OsmAnd."""
