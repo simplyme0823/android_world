@@ -60,7 +60,7 @@ def _get_playlist_file_info(
     env: interface.AsyncEnv,
 ) -> list[sqlite_schema_utils.PlaylistInfo]:
   """Executes join query to fetch playlist file info."""
-  with env.controller.pull_file(_DB_PATH, timeout_sec=3) as local_db_directory:
+  with env.controller.pull_file(_DB_PATH, timeout_sec=15) as local_db_directory:
     local_db_path = file_utils.convert_to_posix_path(
         local_db_directory, os.path.split(_DB_PATH)[1]
     )

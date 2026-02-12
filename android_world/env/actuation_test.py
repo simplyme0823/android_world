@@ -59,8 +59,8 @@ class TestWaitAndFindClickElement(absltest.TestCase):
     mock_create.return_value = (-1, float('inf'))
     mock_sleep.side_effect = (
         0,
-        11,
-    )  # Simulating 11 seconds have passed
+        31,
+    )  # Simulating 31 seconds have passed (timeout is 30s)
     with self.assertRaises(ValueError):
       actuation._wait_and_find_click_element(
           'target', mock.MagicMock(), case_sensitive=True
@@ -172,7 +172,7 @@ class ExecuteAdbActionTest(absltest.TestCase):
       )
       mock_tap_screen.assert_called_once_with(50, 50, self.mock_env)
       mock_type_text.assert_called_once_with(
-          'test input', self.mock_env, timeout_sec=10
+          'test input', self.mock_env, timeout_sec=30
       )
       mock_press_enter_button.assert_called_once_with(self.mock_env)
       mock_issue_generic_request.assert_not_called()

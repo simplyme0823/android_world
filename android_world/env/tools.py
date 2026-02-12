@@ -16,6 +16,7 @@
 
 import inspect
 import json
+import logging
 import time
 from typing import Optional, Union
 
@@ -48,6 +49,17 @@ class AndroidToolController:
 
   def click_element(self, element_text: str):
     actuation.find_and_click_element(element_text, self._env)
+
+  def try_click_element(self, element_text: str) -> bool:
+    """Best-effort click: returns True on success, False if element not found."""
+    try:
+      self.click_element(element_text)
+      return True
+    except ValueError:
+      logging.warning(
+          'Optional dialog element "%s" not found, skipping.', element_text
+      )
+      return False
 
   def open_web_page(self, url: str):
     """Open a web page in the default browser on an Android device.

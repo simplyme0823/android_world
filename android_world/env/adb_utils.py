@@ -53,11 +53,12 @@ def _get_console_port_from_env(env: 'env_interface.AndroidEnvInterface') -> int:
 
 def _send_emulator_console_command(
     command: str,
-    timeout_sec: float = 10.0,
+    timeout_sec: float = 20.0,
     console_host: str | None = None,
     console_port: int | None = None,
+    max_retries: int = 3,
 ) -> str:
-  """Send a command to emulator console via telnet.
+  """Send a command to emulator console via telnet with retry.
 
   In remote/Docker mode, the emulator console may not be accessible via
   'adb emu' commands. This function connects directly to the emulator
@@ -68,12 +69,13 @@ def _send_emulator_console_command(
     timeout_sec: Timeout for the socket operation.
     console_host: The emulator console host. If None, uses environment variable.
     console_port: The emulator console port. If None, uses environment variable.
+    max_retries: Number of retry attempts on transient failures.
 
   Returns:
     The response from the emulator console.
 
   Raises:
-    RuntimeError: If connection or command execution fails.
+    RuntimeError: If connection or command execution fails after all retries.
   """
   if console_host is None:
     console_host = os.getenv("ANDROID_CONSOLE_HOST", os.getenv("ANDROID_REMOTE_HOST", "localhost"))
@@ -81,55 +83,74 @@ def _send_emulator_console_command(
     # Default to 5553 for Docker mode (external socat port), 5554 for local emulator
     console_port = int(os.getenv("ANDROID_CONSOLE_PORT", "5553"))
 
-  try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout_sec)
-    sock.connect((console_host, console_port))
+  last_error: Exception | None = None
+  for attempt in range(1, max_retries + 1):
+    try:
+      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      sock.settimeout(timeout_sec)
+      sock.connect((console_host, console_port))
 
-    # Read the initial greeting from emulator console.
-    # Greeting ends with "OK\r\n". We must fully consume it (including
-    # the trailing \r\n) before sending any command, otherwise leftover
-    # bytes corrupt the next command.
-    greeting = b""
-    while True:
-      chunk = sock.recv(4096)
-      greeting += chunk
-      if not chunk:
-        break
-      # Greeting is fully consumed when we see "OK\r\n" at the end
-      if greeting.rstrip().endswith(b"OK"):
-        break
-    logging.info('Emulator console greeting: %s', greeting.decode('utf-8', errors='ignore').strip())
-
-    # Small delay to ensure the socket buffer is fully drained
-    time.sleep(0.1)
-
-    # Send the command (use \r\n for emulator console telnet protocol)
-    sock.sendall((command + "\r\n").encode())
-
-    # Read response
-    response = b""
-    while True:
-      try:
+      # Read the initial greeting from emulator console.
+      # Greeting ends with "OK\r\n". We must fully consume it (including
+      # the trailing \r\n) before sending any command, otherwise leftover
+      # bytes corrupt the next command.
+      greeting = b""
+      while True:
         chunk = sock.recv(4096)
+        greeting += chunk
         if not chunk:
           break
-        response += chunk
-        if b"OK" in chunk or b"KO" in chunk:
+        # Greeting is fully consumed when we see "OK\r\n" at the end
+        if greeting.rstrip().endswith(b"OK"):
           break
-      except socket.timeout:
-        break
+      logging.info('Emulator console greeting: %s', greeting.decode('utf-8', errors='ignore').strip())
 
-    sock.close()
-    return response.decode('utf-8', errors='ignore')
+      # Small delay to ensure the socket buffer is fully drained
+      time.sleep(0.1)
 
-  except Exception as e:
-    logging.error("Failed to send emulator console command '%s': %s", command, e)
-    raise RuntimeError(f"Emulator console command failed: {e}") from e
+      # Send the command (use \r\n for emulator console telnet protocol)
+      sock.sendall((command + "\r\n").encode())
+
+      # Read response
+      response = b""
+      while True:
+        try:
+          chunk = sock.recv(4096)
+          if not chunk:
+            break
+          response += chunk
+          if b"OK" in chunk or b"KO" in chunk:
+            break
+        except socket.timeout:
+          break
+
+      sock.close()
+      return response.decode('utf-8', errors='ignore')
+
+    except Exception as e:
+      last_error = e
+      try:
+        sock.close()
+      except Exception:
+        pass
+      if attempt < max_retries:
+        delay = min(2 ** attempt, 8)
+        logging.warning(
+            "Console command '%s' failed (attempt %d/%d): %s – retrying in %ds",
+            command, attempt, max_retries, e, delay,
+        )
+        time.sleep(delay)
+      else:
+        logging.error(
+            "Failed to send emulator console command '%s' after %d attempts: %s",
+            command, max_retries, e,
+        )
+
+  raise RuntimeError(f"Emulator console command failed after {max_retries} attempts: {last_error}") from last_error
 
 T = TypeVar('T')
 
-_DEFAULT_TIMEOUT_SECS = 10
+_DEFAULT_TIMEOUT_SECS = 30
 
 # pylint: disable=line-too-long
 # Maps app names to the activity that should be launched to open the app.
@@ -805,11 +826,11 @@ def launch_app(
   if activity is None:
     #  If the app name is not in the mapping, assume it is a package name.
     response = issue_generic_request(
-        ['shell', 'monkey', '-p', app_name, '1'], env, timeout_sec=5
+        ['shell', 'monkey', '-p', app_name, '1'], env, timeout_sec=30
     )
     logging.info('Launching app by package name, response: %r', response)
     return app_name
-  start_activity(activity, extra_args=[], env=env, timeout_sec=5)
+  start_activity(activity, extra_args=[], env=env, timeout_sec=30)
   return app_name
 
 
@@ -1903,22 +1924,41 @@ def set_screen_size(
 
 
 def retry(n: int) -> Callable[[Any], Any]:
-  """Decorator to retry ADB commands."""
+  """Decorator to retry ADB commands.
+
+  Retries on AdbControllerError, subprocess.TimeoutExpired, socket.timeout,
+  and OSError (covers connection-related failures under high concurrency).
+  Uses exponential backoff with jitter to avoid thundering-herd.
+  """
+  import subprocess as _subprocess
+  import random as _random
+
+  _RETRYABLE = (
+      errors.AdbControllerError,
+      _subprocess.TimeoutExpired,
+      _subprocess.SubprocessError,
+      socket.timeout,
+      OSError,
+      RuntimeError,
+  )
 
   def decorator(func: Callable[..., T]) -> Callable[..., T]:
     def wrapper(*args: Any, **kwargs: Any) -> T:
-      attempts = 0
-      while attempts < n:
+      last_exc: Exception | None = None
+      for attempt in range(1, n + 1):
         try:
           return func(*args, **kwargs)
-        except errors.AdbControllerError:
-          attempts += 1
-          if attempts >= n:
+        except _RETRYABLE as exc:
+          last_exc = exc
+          if attempt >= n:
             raise
-          print(f'Could not execute {func}. Retrying...')
-          time.sleep(2)
-        except Exception as exc:
-          raise exc
+          delay = min(2 ** attempt, 16) + _random.uniform(0, 1)
+          logging.warning(
+              'Retry %d/%d for %s after %s – waiting %.1fs',
+              attempt, n, func.__name__, type(exc).__name__, delay,
+          )
+          time.sleep(delay)
+      raise last_exc  # unreachable, keeps type-checker happy
 
     return wrapper
 

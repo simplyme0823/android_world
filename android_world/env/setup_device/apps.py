@@ -142,7 +142,7 @@ class CameraApp(AppSetup):
     try:
       controller = tools.AndroidToolController(env=env.controller)
       time.sleep(2.0)
-      controller.click_element("NEXT")
+      controller.try_click_element("NEXT")
       time.sleep(2.0)
     finally:
       adb_utils.close_app(cls.app_name, env.controller)
@@ -153,26 +153,61 @@ class ChromeApp(AppSetup):
 
   app_name = "chrome"
 
+  _MAX_SETUP_ATTEMPTS = 3
+
+  @classmethod
+  def _try_click_through_fre(
+      cls, env: interface.AsyncEnv,
+  ) -> bool:
+    """Attempt to click through Chrome first-run experience.
+
+    Returns True if ToS "Accept & continue" was successfully clicked.
+    """
+    controller = tools.AndroidToolController(env=env.controller)
+    # Chrome cold start after pm clear is slow, especially with 50 concurrent
+    # emulators.  Give it plenty of time to render the welcome screen.
+    time.sleep(5.0)
+    # Welcome screen / ToS — this is the critical one.
+    tos_ok = controller.try_click_element("Accept & continue")
+    time.sleep(2.0)
+    # Turn on sync?
+    controller.try_click_element("No thanks")
+    time.sleep(2.0)
+    # Enable notifications?
+    controller.try_click_element("No thanks")
+    time.sleep(2.0)
+    return tos_ok
+
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
 
-    # Click through onboarding screens during first time launch.
-    adb_utils.launch_app(cls.app_name, env.controller)
-    try:
-      controller = tools.AndroidToolController(env=env.controller)
-      time.sleep(2.0)
-      # Welcome screen.
-      controller.click_element("Accept & continue")
-      time.sleep(2.0)
-      # Turn on sync?
-      controller.click_element("No thanks")
-      time.sleep(2.0)
-      # Enable notifications?
-      controller.click_element("No thanks")
-      time.sleep(2.0)
-    finally:
-      adb_utils.close_app(cls.app_name, env.controller)
+    # Retry the entire Chrome FRE flow. The ToS "Accept & continue" screen is
+    # critical — Chrome is unusable until it is accepted.  With many concurrent
+    # containers the first attempt may time out waiting for the heavy cold
+    # start, so we retry up to _MAX_SETUP_ATTEMPTS times.
+    for attempt in range(1, cls._MAX_SETUP_ATTEMPTS + 1):
+      adb_utils.launch_app(cls.app_name, env.controller)
+      try:
+        tos_ok = cls._try_click_through_fre(env)
+      finally:
+        adb_utils.close_app(cls.app_name, env.controller)
+
+      if tos_ok:
+        logging.info("Chrome FRE completed on attempt %d.", attempt)
+        return
+
+      logging.warning(
+          "Chrome ToS not found on attempt %d/%d, retrying...",
+          attempt, cls._MAX_SETUP_ATTEMPTS,
+      )
+      time.sleep(3.0)
+
+    # All attempts failed — raise so setup_app() logs the warning.
+    raise ValueError(
+        "Chrome first-run experience could not be completed after"
+        f" {cls._MAX_SETUP_ATTEMPTS} attempts."
+    )
 
 
 class ClockApp(AppSetup):
@@ -205,10 +240,12 @@ class ContactsApp(AppSetup):
       controller = tools.AndroidToolController(env=env.controller)
       time.sleep(2.0)
       # Back up & organize your contacts with Google.
-      controller.click_element("Skip")
+      controller.try_click_element("Skip")
       time.sleep(2.0)
       # Allow Contacts to send you notifications?
-      controller.click_element("Don't allow")
+      # This dialog only appears on API 33+; on older versions the permission
+      # is granted by default and no prompt is shown — safe to skip.
+      controller.try_click_element("Don't allow")
       time.sleep(2.0)
     finally:
       adb_utils.close_app(cls.app_name, env.controller)
@@ -238,31 +275,65 @@ class MarkorApp(AppSetup):
   apk_names = ("net.gsantner.markor_146.apk",)
   app_name = "markor"
 
+  _MAX_SETUP_ATTEMPTS = 3
+
+  @classmethod
+  def _try_click_through_onboarding(cls, env: interface.AsyncEnv) -> bool:
+    """Click through Markor onboarding wizard. Returns True if successful."""
+    controller = tools.AndroidToolController(env=env.controller)
+    time.sleep(3.0)
+    # First NEXT is the critical indicator — if it's found the wizard is up.
+    if not controller.try_click_element("NEXT"):
+      return False
+    time.sleep(2.0)
+    controller.try_click_element("NEXT")
+    time.sleep(2.0)
+    controller.try_click_element("NEXT")
+    time.sleep(2.0)
+    controller.try_click_element("NEXT")
+    time.sleep(2.0)
+    controller.try_click_element("DONE")
+    time.sleep(2.0)
+    controller.try_click_element("OK")
+    time.sleep(2.0)
+    controller.try_click_element("Allow access to manage all files")
+    time.sleep(2.0)
+    return True
+
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
 
-    adb_utils.launch_app(cls.app_name, env.controller)
-    try:
-      controller = tools.AndroidToolController(env=env.controller)
-      time.sleep(2.0)
-      controller.click_element("NEXT")
-      time.sleep(2.0)
-      controller.click_element("NEXT")
-      time.sleep(2.0)
-      controller.click_element("NEXT")
-      time.sleep(2.0)
-      controller.click_element("NEXT")
-      time.sleep(2.0)
-      controller.click_element("DONE")
-      time.sleep(2.0)
+    package = adb_utils.extract_package_name(
+        adb_utils.get_adb_activity(cls.app_name)
+    )
+    # Grant all-files-access via ADB as fallback for the UI dialog.
+    adb_utils.issue_generic_request(
+        ['shell', 'appops', 'set', package, 'MANAGE_EXTERNAL_STORAGE', 'allow'],
+        env.controller,
+    )
 
-      controller.click_element("OK")
-      time.sleep(2.0)
-      controller.click_element("Allow access to manage all files")
-      time.sleep(2.0)
-    finally:
-      adb_utils.close_app(cls.app_name, env.controller)
+    for attempt in range(1, cls._MAX_SETUP_ATTEMPTS + 1):
+      adb_utils.launch_app(cls.app_name, env.controller)
+      try:
+        ok = cls._try_click_through_onboarding(env)
+      finally:
+        adb_utils.close_app(cls.app_name, env.controller)
+
+      if ok:
+        logging.info("Markor onboarding completed on attempt %d.", attempt)
+        return
+
+      logging.warning(
+          "Markor onboarding not found on attempt %d/%d, retrying...",
+          attempt, cls._MAX_SETUP_ATTEMPTS,
+      )
+      time.sleep(3.0)
+
+    raise ValueError(
+        f"Markor onboarding could not be completed after"
+        f" {cls._MAX_SETUP_ATTEMPTS} attempts."
+    )
 
 
 class AndroidWorldApp(AppSetup):
@@ -303,15 +374,30 @@ class ClipperApp(AppSetup):
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
-    controller = tools.AndroidToolController(env=env.controller)
-    adb_utils.launch_app(cls.app_name, env.controller)
-    try:
-      time.sleep(2.0)
-      controller.click_element("Continue")
-      time.sleep(2.0)
-      controller.click_element("OK")
-    finally:
-      adb_utils.close_app(cls.app_name, env.controller)
+
+    for attempt in range(1, 4):
+      adb_utils.launch_app(cls.app_name, env.controller)
+      try:
+        controller = tools.AndroidToolController(env=env.controller)
+        time.sleep(3.0)
+        cont_ok = controller.try_click_element("Continue")
+        time.sleep(2.0)
+        controller.try_click_element("OK")
+      finally:
+        adb_utils.close_app(cls.app_name, env.controller)
+
+      if cont_ok:
+        logging.info("Clipper onboarding completed on attempt %d.", attempt)
+        return
+
+      logging.warning(
+          "Clipper onboarding not found on attempt %d/3, retrying...", attempt,
+      )
+      time.sleep(3.0)
+
+    raise ValueError(
+        "Clipper onboarding could not be completed after 3 attempts."
+    )
 
 
 class SimpleCalendarProApp(AppSetup):
@@ -391,14 +477,19 @@ class SimpleGalleryProApp(AppSetup):
     )
     for permission in cls.PERMISSIONS:
       adb_utils.grant_permissions(package, permission, env.controller)
+    # Grant all-files-access via ADB as fallback for the UI dialog.
+    adb_utils.issue_generic_request(
+        ['shell', 'appops', 'set', package, 'MANAGE_EXTERNAL_STORAGE', 'allow'],
+        env.controller,
+    )
 
     adb_utils.launch_app("simple gallery pro", env.controller)
     try:
       controller = tools.AndroidToolController(env=env.controller)
       time.sleep(2.0)
-      controller.click_element("All files")
+      controller.try_click_element("All files")
       time.sleep(2.0)
-      controller.click_element("Allow access to manage all files")
+      controller.try_click_element("Allow access to manage all files")
     finally:
       adb_utils.close_app(cls.app_name, env.controller)
 
@@ -426,9 +517,9 @@ class SimpleSMSMessengerApp(AppSetup):
     try:
       controller = tools.AndroidToolController(env=env.controller)
       time.sleep(2.0)
-      controller.click_element("SMS Messenger")
+      controller.try_click_element("SMS Messenger")
       time.sleep(2.0)
-      controller.click_element("Set as default")
+      controller.try_click_element("Set as default")
     finally:
       adb_utils.close_app(cls.app_name, env.controller)
 
@@ -485,16 +576,32 @@ class ExpenseApp(AppSetup):
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
-    adb_utils.launch_app(cls.app_name, env.controller)
-    try:
-      time.sleep(2.0)
-      controller = tools.AndroidToolController(env=env.controller)
-      controller.click_element("NEXT")
-      time.sleep(2.0)
-      controller.click_element("CONTINUE")
+
+    for attempt in range(1, 4):
+      adb_utils.launch_app(cls.app_name, env.controller)
+      try:
+        time.sleep(3.0)
+        controller = tools.AndroidToolController(env=env.controller)
+        next_ok = controller.try_click_element("NEXT")
+        time.sleep(2.0)
+        controller.try_click_element("CONTINUE")
+        time.sleep(3.0)
+      finally:
+        adb_utils.close_app(cls.app_name, env.controller)
+
+      if next_ok:
+        logging.info("Pro Expense onboarding completed on attempt %d.", attempt)
+        return
+
+      logging.warning(
+          "Pro Expense onboarding not found on attempt %d/3, retrying...",
+          attempt,
+      )
       time.sleep(3.0)
-    finally:
-      adb_utils.close_app(cls.app_name, env.controller)
+
+    raise ValueError(
+        "Pro Expense onboarding could not be completed after 3 attempts."
+    )
 
 
 class RecipeApp(AppSetup):
@@ -557,9 +664,8 @@ class OsmAndApp(AppSetup):
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
-    # Use start_activity directly with a longer timeout (30s) instead of
-    # launch_app() which hardcodes 5s — OsmAnd cold start after pm clear
-    # needs time to initialize and extract the basemap.
+    # Use start_activity directly with explicit timeout — OsmAnd cold start
+    # after pm clear needs time to initialize and extract the basemap.
     activity = adb_utils.get_adb_activity(cls.app_name)
     adb_utils.start_activity(
         activity, extra_args=[], env=env.controller, timeout_sec=30
@@ -568,12 +674,8 @@ class OsmAndApp(AppSetup):
 
     try:
       controller = tools.AndroidToolController(env=env.controller)
-      controller.click_element("SKIP DOWNLOAD")
+      controller.try_click_element("SKIP DOWNLOAD")
       time.sleep(2.0)
-    except ValueError:
-      logging.warn(
-          "First time setup did not click through all anticipated screens."
-      )
     finally:
       # Wait for OsmAnd to extract World_basemap_mini.obf from APK assets.
       # After `pm clear`, OsmAnd re-extracts this ~51MB basemap on first launch.
@@ -655,7 +757,7 @@ class OpenTracksApp(AppSetup):
     time.sleep(2.0)
     controller = tools.AndroidToolController(env=env.controller)
     # Give permission for bluetooth, can't be done through adb.
-    controller.click_element("Allow")
+    controller.try_click_element("Allow")
     adb_utils.launch_app("activity tracker", env.controller)
     adb_utils.close_app("activity tracker", env.controller)
 
@@ -679,36 +781,55 @@ class VlcApp(AppSetup):
     adb_utils.grant_permissions(
         package, "android.permission.POST_NOTIFICATIONS", env.controller
     )
+    # Grant all-files-access via ADB as fallback for the UI dialog.
+    adb_utils.issue_generic_request(
+        ['shell', 'appops', 'set', package, 'MANAGE_EXTERNAL_STORAGE', 'allow'],
+        env.controller,
+    )
     if not file_utils.check_directory_exists(cls.videos_path, env.controller):
       file_utils.mkdir(cls.videos_path, env.controller)
 
     time.sleep(2.0)
-    # Launch similar to opening app from app launcher. This runs setup logic not
-    # available using `adb shell am start`. Specifically, it will create the
-    # /data/data/org.videolan.vlc/app_db/vlc_media.db file.
-    adb_utils.issue_generic_request(
-        [
-            "shell",
-            "monkey",
-            "-p",
-            package,
-            "-candroid.intent.category.LAUNCHER",
-            "1",
-        ],
-        env.controller,
-    )
-    time.sleep(2.0)
-    try:
-      controller = tools.AndroidToolController(env=env.controller)
-      controller.click_element("Skip")
-      time.sleep(2.0)
-      controller.click_element("GRANT PERMISSION")
-      time.sleep(2.0)
-      controller.click_element("OK")
-      time.sleep(2.0)
-      controller.click_element("Allow access to manage all files")
-    finally:
-      adb_utils.close_app(cls.app_name, env.controller)
+
+    for attempt in range(1, 4):
+      # Launch similar to opening app from app launcher. This runs setup logic
+      # not available using `adb shell am start`. Specifically, it will create
+      # the /data/data/org.videolan.vlc/app_db/vlc_media.db file.
+      adb_utils.issue_generic_request(
+          [
+              "shell",
+              "monkey",
+              "-p",
+              package,
+              "-candroid.intent.category.LAUNCHER",
+              "1",
+          ],
+          env.controller,
+      )
+      time.sleep(3.0)
+      try:
+        controller = tools.AndroidToolController(env=env.controller)
+        # "Skip" is the critical first onboarding screen.
+        skip_ok = controller.try_click_element("Skip")
+        time.sleep(2.0)
+        controller.try_click_element("GRANT PERMISSION")
+        time.sleep(2.0)
+        controller.try_click_element("OK")
+        time.sleep(2.0)
+        controller.try_click_element("Allow access to manage all files")
+      finally:
+        adb_utils.close_app(cls.app_name, env.controller)
+
+      if skip_ok:
+        logging.info("VLC onboarding completed on attempt %d.", attempt)
+        return
+
+      logging.warning(
+          "VLC onboarding not found on attempt %d/3, retrying...", attempt,
+      )
+      time.sleep(3.0)
+
+    raise ValueError("VLC onboarding could not be completed after 3 attempts.")
 
 
 class JoplinApp(AppSetup):

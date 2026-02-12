@@ -119,7 +119,7 @@ class RemoteAdbController(adb_controller.AdbController):
         time.sleep(1.0)
         # Best-effort devices verification — connect already succeeded, don't block on this
         try:
-          devices_output = self.execute_command(['devices'], timeout=10, device_specific=False)
+          devices_output = self.execute_command(['devices'], timeout=20, device_specific=False)
           logging.info('Devices after reconnect: %s', devices_output.decode('utf-8').strip())
         except Exception:
           logging.warning('devices check after reconnect timed out, but connect succeeded')

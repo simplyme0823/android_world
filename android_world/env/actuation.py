@@ -101,7 +101,7 @@ def execute_adb_action(
         )
         time.sleep(1.0)
 
-      adb_utils.type_text(text, env, timeout_sec=10)
+      adb_utils.type_text(text, env, timeout_sec=30)
       adb_utils.press_enter_button(env)
     else:
       logging.warning(
@@ -229,6 +229,7 @@ def find_and_click_element(
     element_text: str,
     env: android_world_controller.AndroidWorldController,
     case_sensitive: bool = False,
+    timeout_sec: float = 30.0,
 ):
   """Identifies element with element_text and clicks it.
 
@@ -237,9 +238,12 @@ def find_and_click_element(
     env: The Android env instance.
     case_sensitive: Whether to use case sensitivity when determining which UI
       element to tap.
+    timeout_sec: Maximum seconds to wait for the element to appear.
   """
   # Find text and get the UI elements atomically to avoid race condition.
-  action, ui_elements = _wait_and_find_click_element(element_text, env, case_sensitive)
+  action, ui_elements = _wait_and_find_click_element(
+      element_text, env, case_sensitive, timeout_sec=timeout_sec,
+  )
 
   screen_size = (0, 0)  # Unused, but required.
   execute_adb_action(action, ui_elements, screen_size, env)
@@ -250,6 +254,7 @@ def _wait_and_find_click_element(
     env: android_world_controller.AndroidWorldController,
     case_sensitive: bool,
     dist_threshold: int = 1,  # Allow one character difference.
+    timeout_sec: float = 30.0,
 ) -> tuple[json_action.JSONAction, list[representation_utils.UIElement]]:
   """Wait for the screen to update until "element_text" appears.
 
@@ -264,7 +269,7 @@ def _wait_and_find_click_element(
   )
   start = time.time()
   current = time.time()
-  while current - start < 10:
+  while current - start < timeout_sec:
     if distance <= dist_threshold:
       return json_action.JSONAction(action_type='click', index=element), ui_elements
     ui_elements = env.get_ui_elements()

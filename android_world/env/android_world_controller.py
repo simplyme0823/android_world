@@ -461,7 +461,7 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
           'com.google.androidenv.accessibilityforwarder/'
           'com.google.androidenv.accessibilityforwarder.AccessibilityForwarder',
       ]
-      result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+      result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
       if result.returncode != 0:
         logging.warning('Failed to re-enable a11y service: %s', result.stderr)
         return False
@@ -483,7 +483,7 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
             '-n', 'com.google.androidenv.accessibilityforwarder/'
                   'com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver',
         ]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
       logging.info('Sent gRPC port %s to AccessibilityForwarder', self._a11y_port)
       return True
@@ -652,7 +652,7 @@ def _check_adb_connection(adb_path: str, device_name: str, adb_server_port: int 
         cmd,
         capture_output=True,
         text=True,
-        timeout=5
+        timeout=15
     )
     return result.returncode == 0 and "ping" in result.stdout
   except Exception as e:
@@ -661,7 +661,7 @@ def _check_adb_connection(adb_path: str, device_name: str, adb_server_port: int 
 
 
 def _setup_adb_reverse(adb_path: str, device_name: str, a11y_port: int, adb_server_port: int = 5037) -> bool:
-  """Set up adb reverse for a11y gRPC port.
+  """Set up adb reverse for a11y gRPC port with retry.
 
   Args:
     adb_path: Path to adb binary.
@@ -672,52 +672,66 @@ def _setup_adb_reverse(adb_path: str, device_name: str, a11y_port: int, adb_serv
   Returns:
     True if setup was successful, False otherwise.
   """
-  try:
-    adb_path = os.path.expanduser(adb_path)
-    logging.info(
-        'Setting up adb reverse for a11y gRPC port %s on device %s',
-        a11y_port, device_name,
-    )
+  import random as _random
 
-    # Set up adb reverse
-    result = subprocess.run(
-        [adb_path, '-P', str(adb_server_port), '-s', device_name,
-         'reverse', f'tcp:{a11y_port}', f'tcp:{a11y_port}'],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode != 0:
-      logging.warning('adb reverse failed: %s', result.stderr)
-      return False
+  adb_path = os.path.expanduser(adb_path)
+  max_retries = 3
 
-    # Tell the Forwarder App to connect to localhost
-    result = subprocess.run(
-        [adb_path, '-P', str(adb_server_port), '-s', device_name,
-         'shell', 'am', 'broadcast',
-         '-a', 'accessibility_forwarder.intent.action.SET_GRPC',
-         '--es', 'host', 'localhost',
-         '--ei', 'port', str(a11y_port),
-         '-n', 'com.google.androidenv.accessibilityforwarder/com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver'],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode != 0:
-      logging.warning('Failed to set Forwarder App gRPC target: %s', result.stderr)
-      return False
+  for attempt in range(1, max_retries + 1):
+    try:
+      logging.info(
+          'Setting up adb reverse for a11y gRPC port %s on device %s (attempt %d/%d)',
+          a11y_port, device_name, attempt, max_retries,
+      )
 
-    logging.info(
-        'Successfully set up adb reverse and Forwarder App gRPC target to localhost:%s',
-        a11y_port,
-    )
-    return True
-  except Exception as e:
-    logging.warning(
-        'Failed to set up adb reverse for port %s on device %s: %s',
-        a11y_port, device_name, e,
-    )
-    return False
+      # Set up adb reverse
+      result = subprocess.run(
+          [adb_path, '-P', str(adb_server_port), '-s', device_name,
+           'reverse', f'tcp:{a11y_port}', f'tcp:{a11y_port}'],
+          capture_output=True, text=True, timeout=30,
+      )
+      if result.returncode != 0:
+        logging.warning('adb reverse failed: %s', result.stderr)
+        if attempt < max_retries:
+          time.sleep(2 + _random.uniform(0, 1))
+          continue
+        return False
+
+      # Tell the Forwarder App to connect to localhost
+      result = subprocess.run(
+          [adb_path, '-P', str(adb_server_port), '-s', device_name,
+           'shell', 'am', 'broadcast',
+           '-a', 'accessibility_forwarder.intent.action.SET_GRPC',
+           '--es', 'host', 'localhost',
+           '--ei', 'port', str(a11y_port),
+           '-n', 'com.google.androidenv.accessibilityforwarder/com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver'],
+          capture_output=True, text=True, timeout=30,
+      )
+      if result.returncode != 0:
+        logging.warning('Failed to set Forwarder App gRPC target: %s', result.stderr)
+        if attempt < max_retries:
+          time.sleep(2 + _random.uniform(0, 1))
+          continue
+        return False
+
+      logging.info(
+          'Successfully set up adb reverse and Forwarder App gRPC target to localhost:%s',
+          a11y_port,
+      )
+      return True
+    except Exception as e:
+      logging.warning(
+          'adb reverse attempt %d/%d failed for port %s on device %s: %s',
+          attempt, max_retries, a11y_port, device_name, e,
+      )
+      if attempt < max_retries:
+        time.sleep(2 + _random.uniform(0, 1))
+
+  return False
 
 
 def _adb_connect_remote(adb_path: str, device_name: str, adb_server_port: int = 5037) -> bool:
-  """Connect to remote ADB device.
+  """Connect to remote ADB device with retry.
 
   Args:
     adb_path: Path to adb binary.
@@ -727,34 +741,41 @@ def _adb_connect_remote(adb_path: str, device_name: str, adb_server_port: int = 
   Returns:
     True if connection successful, False otherwise.
   """
-  try:
-    # Expand adb path
-    adb_path = os.path.expanduser(adb_path)
+  import random as _random
 
-    # Execute adb connect with specific server port
-    cmd = [adb_path, "-P", str(adb_server_port), "connect", device_name]
-    logging.info("Executing: %s", " ".join(cmd))
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=30
-    )
+  adb_path = os.path.expanduser(adb_path)
+  max_retries = 3
 
-    output = result.stdout + result.stderr
-    logging.info("adb connect output: %s", output)
+  for attempt in range(1, max_retries + 1):
+    try:
+      cmd = [adb_path, "-P", str(adb_server_port), "connect", device_name]
+      logging.info("Executing (attempt %d/%d): %s", attempt, max_retries, " ".join(cmd))
+      result = subprocess.run(
+          cmd,
+          capture_output=True,
+          text=True,
+          timeout=30
+      )
 
-    # Check if connection was successful
-    if "connected" in output.lower() or "already connected" in output.lower():
-      logging.info("Successfully connected to remote device: %s", device_name)
-      return True
-    else:
-      logging.warning("Failed to connect to remote device: %s, output: %s",
-                      device_name, output)
-      return False
-  except Exception as e:
-    logging.error("Error connecting to remote device: %s", e)
-    return False
+      output = result.stdout + result.stderr
+      logging.info("adb connect output: %s", output)
+
+      if "connected" in output.lower() or "already connected" in output.lower():
+        logging.info("Successfully connected to remote device: %s", device_name)
+        return True
+      else:
+        logging.warning("Failed to connect to remote device: %s, output: %s",
+                        device_name, output)
+    except Exception as e:
+      logging.warning("adb connect attempt %d/%d failed: %s", attempt, max_retries, e)
+
+    if attempt < max_retries:
+      delay = 2 * attempt + _random.uniform(0, 1)
+      logging.info("Retrying adb connect in %.1fs...", delay)
+      time.sleep(delay)
+
+  logging.error("Failed to connect to remote device %s after %d attempts", device_name, max_retries)
+  return False
 
 
 def _load_android_env(config: config_classes.AndroidEnvConfig):
