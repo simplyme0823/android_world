@@ -39,6 +39,10 @@ import dm_env
 # Lock for ADB reconnection to prevent concurrent reconnection attempts
 _adb_reconnect_lock = threading.Lock()
 
+# Throttle check_airplane_mode: at most once per interval to reduce ADB load
+_last_airplane_check: dict[int, float] = {}
+_AIRPLANE_CHECK_INTERVAL = 30.0
+
 
 def _has_wrapper(
     env: env_interface.AndroidEnvInterface,
@@ -84,14 +88,19 @@ def get_a11y_tree(
         'Must use a11y_grpc_wrapper.A11yGrpcWrapper to get the a11y tree.'
     )
   env = cast(a11y_grpc_wrapper.A11yGrpcWrapper, env)
-  if adb_utils.retry(3)(adb_utils.check_airplane_mode)(env):
-    logging.warning(
-        'Airplane mode is on -- cannot retrieve a11y tree via gRPC. Turning'
-        ' it off...'
-    )
-    logging.info('Enabling networking...')
-    env.attempt_enable_networking()
-    time.sleep(1.0)
+  # Throttle airplane mode check to reduce ADB load under concurrency
+  env_id = id(env)
+  now = time.time()
+  if now - _last_airplane_check.get(env_id, 0) > _AIRPLANE_CHECK_INTERVAL:
+    _last_airplane_check[env_id] = now
+    if adb_utils.retry(1)(adb_utils.check_airplane_mode)(env):
+      logging.warning(
+          'Airplane mode is on -- cannot retrieve a11y tree via gRPC. Turning'
+          ' it off...'
+      )
+      logging.info('Enabling networking...')
+      env.attempt_enable_networking()
+      time.sleep(1.0)
 
   forest: Optional[
       android_accessibility_forest_pb2.AndroidAccessibilityForest

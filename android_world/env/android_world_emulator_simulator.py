@@ -49,6 +49,8 @@ class RemoteAdbController(adb_controller.AdbController):
   """
 
   def __init__(self, config: config_classes.AdbControllerConfig):
+    # Disable ADB mDNS discovery to prevent cross-contamination between concurrent instances
+    os.environ['ADB_MDNS_OPENSCREEN'] = '0'
     super().__init__(config)
     self._remote_device_name = _get_remote_device_name() if _is_remote_mode() else None
 
@@ -59,21 +61,33 @@ class RemoteAdbController(adb_controller.AdbController):
       timeout: A timeout to use for this operation. If not set the default
         timeout set on the constructor will be used.
     """
+    restart_timeout = 10.0  # Fixed short timeout to avoid inheriting caller's long timeout
+
     logging.info('Restarting adb server.')
-    self.execute_command(
-        ['kill-server'], timeout=timeout, device_specific=False)
-    time.sleep(0.2)
-    cmd_output = self.execute_command(
-        ['start-server'], timeout=timeout, device_specific=False)
-    logging.info('start-server output: %r', cmd_output.decode('utf-8'))
-    time.sleep(2.0)
-    self.execute_command(
-        ['devices'], timeout=timeout, device_specific=False)
+    # kill-server may fail if the server is already dead — that's fine
+    try:
+      self.execute_command(
+          ['kill-server'], timeout=restart_timeout, device_specific=False)
+    except Exception:
+      logging.warning('kill-server failed, proceeding with start-server anyway')
     time.sleep(0.2)
 
-    # Reconnect to remote device if in remote mode
+    cmd_output = self.execute_command(
+        ['start-server'], timeout=restart_timeout, device_specific=False)
+    logging.info('start-server output: %r', cmd_output.decode('utf-8'))
+    time.sleep(2.0)
+
     if self._remote_device_name:
+      # Remote mode: reconnect first, then devices verification happens inside
       self._reconnect_remote_device(timeout)
+    else:
+      # Local mode: just check devices list
+      try:
+        self.execute_command(
+            ['devices'], timeout=restart_timeout, device_specific=False)
+      except Exception:
+        logging.warning('devices check failed after restart')
+      time.sleep(0.2)
 
   def _reconnect_remote_device(self, timeout: float | None = None):
     """Reconnects to the remote ADB device after server restart.
@@ -103,9 +117,12 @@ class RemoteAdbController(adb_controller.AdbController):
         logging.info('Successfully reconnected to remote device: %s', self._remote_device_name)
         # Wait a bit for the connection to stabilize
         time.sleep(1.0)
-        # Verify the device is now visible
-        devices_output = self.execute_command(['devices'], timeout=timeout, device_specific=False)
-        logging.info('Devices after reconnect: %s', devices_output.decode('utf-8').strip())
+        # Best-effort devices verification — connect already succeeded, don't block on this
+        try:
+          devices_output = self.execute_command(['devices'], timeout=10, device_specific=False)
+          logging.info('Devices after reconnect: %s', devices_output.decode('utf-8').strip())
+        except Exception:
+          logging.warning('devices check after reconnect timed out, but connect succeeded')
       else:
         logging.warning('Failed to reconnect to remote device: %s, output: %s',
                         self._remote_device_name, output)
