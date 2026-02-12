@@ -79,7 +79,7 @@ class RemoteAdbController(adb_controller.AdbController):
 
     if self._remote_device_name:
       # Remote mode: reconnect first, then devices verification happens inside
-      self._reconnect_remote_device(timeout)
+      self._reconnect_remote_device(restart_timeout)
     else:
       # Local mode: just check devices list
       try:

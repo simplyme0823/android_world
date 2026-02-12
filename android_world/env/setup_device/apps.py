@@ -557,7 +557,13 @@ class OsmAndApp(AppSetup):
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
-    adb_utils.launch_app(cls.app_name, env.controller)
+    # Use start_activity directly with a longer timeout (30s) instead of
+    # launch_app() which hardcodes 5s — OsmAnd cold start after pm clear
+    # needs time to initialize and extract the basemap.
+    activity = adb_utils.get_adb_activity(cls.app_name)
+    adb_utils.start_activity(
+        activity, extra_args=[], env=env.controller, timeout_sec=30
+    )
     time.sleep(2.0)
 
     try:
