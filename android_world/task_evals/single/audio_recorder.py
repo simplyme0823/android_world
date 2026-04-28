@@ -171,7 +171,7 @@ class AudioRecorderRecordAudioWithFileName(_AudioRecorder):
     ]
     return {
         "file_name": user_data_generation.generate_modified_file_name(
-            random.choice(name) + ".m4a"
+            random.choice(name)
         ),
         "text": "",  # Unused.
     }

@@ -82,6 +82,11 @@ class AudioRecorderTest(test_utils.AdbEvalTestBase):
     result = task.is_successful(self.mock_env)
     self.assertEqual(result, 1)
 
+  def test_audio_recorder_with_file_random_params_omit_extension(self):
+    params = audio_recorder.AudioRecorderRecordAudioWithFileName.generate_random_params()
+
+    self.assertFalse(params["file_name"].endswith(".m4a"), params["file_name"])
+
 
 if __name__ == "__main__":
   absltest.main()
