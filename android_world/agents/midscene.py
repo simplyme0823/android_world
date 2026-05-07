@@ -34,6 +34,8 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
 
   def reset(self, go_home: bool = False) -> None:
     super().reset(go_home)
+    # Hide pointer-location traces that can confuse vision-based drawing tasks.
+    self.env.hide_automation_ui()
     self.step_count = 0
 
   def start_new_task(self, task_name: str, task_id: str) -> None:
