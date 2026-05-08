@@ -566,6 +566,10 @@ class BrowserDraw(BrowserTask):
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 
+    function flushCanvas() {
+      ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
     function generateRandomColors(count) {
       const colors = [];
       const remainingColors = [...availableColors];
@@ -690,6 +694,7 @@ class BrowserDraw(BrowserTask):
       ctx.moveTo(lastX, lastY);
       ctx.lineTo(currentX, currentY);
       ctx.stroke();
+      flushCanvas();
       [lastX, lastY] = [currentX, currentY];
     }
     function stopDrawing() {
