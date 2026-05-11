@@ -490,6 +490,48 @@ class ProtoUtilsTest(parameterized.TestCase):
         expected_proto,
     )
 
+  def test_first_event_after_start_time_uses_strict_boundary(self):
+    task = task_pb2.Task(
+        name='SimpleCalendarFirstEventAfterStartTime',
+        relevant_state=task_pb2.RelevantState(
+            state=state_pb2.State(
+                calendar=state_pb2.Calendar(
+                    events=[
+                        state_pb2.Event(
+                            start_date='{date}',
+                            start_time='{time}',
+                            duration='60 minutes',
+                            title='{title}',
+                        )
+                    ]
+                )
+            )
+        ),
+        task_params=[
+            task_pb2.TaskParams(
+                name='date', possible_values=['October 29 2023']
+            ),
+            task_pb2.TaskParams(name='time', possible_values=['5:20pm']),
+            task_pb2.TaskParams(
+                name='title', possible_values=['Grocery Shopping']
+            ),
+        ],
+    )
+
+    proto_utils.initialize_proto(
+        task,
+        {
+            'date': 'October 29 2023',
+            'time': '5:20pm',
+            'title': 'Grocery Shopping',
+        },
+    )
+
+    [event] = task.relevant_state.state.calendar.events
+    self.assertEqual(event.start_date, 'October 29 2023')
+    self.assertEqual(event.start_time, '17:21')
+    self.assertEqual(event.title, 'Grocery Shopping')
+
   @parameterized.parameters([
       (
           datetime.date(2023, 10, 15),

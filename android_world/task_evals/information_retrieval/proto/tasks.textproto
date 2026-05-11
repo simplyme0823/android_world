@@ -877,7 +877,7 @@ tasks {
       value: "{date}"
     }
     exclusion_conditions {
-      operation: GREATER_THAN_OR_EQUAL_TO
+      operation: GREATER_THAN
       field: "start_time"
       value: "{time}"
     }

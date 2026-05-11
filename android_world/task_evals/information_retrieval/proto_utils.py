@@ -49,6 +49,10 @@ FieldMessage = TypeVar(
     task_pb2.ExclusionCondition,
 )
 
+_STRICT_AFTER_CALENDAR_FIRST_EVENT_TASK = (
+    'SimpleCalendarFirstEventAfterStartTime'
+)
+
 
 def _combine_date_and_time(
     answer1: ExpectedAnswer, answer2: ExpectedAnswer
@@ -323,6 +327,26 @@ def initialize_proto(task: task_pb2.Task, task_params: dict[str, Any]):
   format_relevant_state_with_params(
       task.relevant_state, task_params, list(task.task_params)
   )
+  _shift_calendar_first_event_after_boundary(task)
+
+
+def _shift_calendar_first_event_after_boundary(task: task_pb2.Task) -> None:
+  """Makes the seeded answer strictly after the prompt boundary for one task."""
+  if task.name != _STRICT_AFTER_CALENDAR_FIRST_EVENT_TASK:
+    return
+  if not task.relevant_state.state.HasField('calendar'):
+    return
+
+  for event in task.relevant_state.state.calendar.events:
+    if not event.HasField('start_date') or not event.HasField('start_time'):
+      continue
+    start_date = datetime_utils_ir.get_date(event.start_date)
+    start_time = datetime_utils_ir.parse_time(event.start_time)
+    strict_start = datetime.datetime.combine(
+        start_date, start_time
+    ) + datetime.timedelta(minutes=1)
+    event.start_date = strict_start.strftime(datetime_utils_ir.DATE_FORMAT)
+    event.start_time = strict_start.strftime('%H:%M')
 
 
 def _format_success_criteria_with_params(
