@@ -70,6 +70,8 @@ class UIElement:
   is_scrollable: Optional[bool] = None
   is_selected: Optional[bool] = None
   is_visible: Optional[bool] = None
+  text_selection_start: Optional[int] = None
+  text_selection_end: Optional[int] = None
   package_name: Optional[str] = None
   resource_name: Optional[str] = None
   tooltip: Optional[str] = None
@@ -115,6 +117,8 @@ def accessibility_node_to_ui_element(
       is_scrollable=node.is_scrollable,
       is_selected=node.is_selected,
       is_visible=node.is_visible_to_user,
+      text_selection_start=node.text_selection_start,
+      text_selection_end=node.text_selection_end,
       package_name=text_or_none(node.package_name),
       resource_name=text_or_none(node.view_id_resource_name),
   )
@@ -191,6 +195,32 @@ def _bounds_str(node: Any) -> str:
   return f'[{b.left},{b.top}][{b.right},{b.bottom}]'
 
 
+def _selection_attrs(node: Any) -> str:
+  start = getattr(node, 'text_selection_start', 0)
+  end = getattr(node, 'text_selection_end', 0)
+
+  # For proto3 fields, 0 is also the default for nodes without a selection.
+  # Emit a zero offset only when an editable node is focused; otherwise require
+  # Android to report a non-default range.
+  if (
+      start == 0
+      and end == 0
+      and not (
+          getattr(node, 'is_focused', False)
+          and getattr(node, 'is_editable', False)
+      )
+  ):
+    return ''
+
+  attrs = (
+      f' text-selection-start="{start}"'
+      f' text-selection-end="{end}"'
+  )
+  if start == end and start >= 0:
+    attrs += f' cursor-position="{start}"'
+  return attrs
+
+
 def _raw_xml_node(node: Any, children_by_id: dict[int, list[Any]],
                   indent: int) -> str:
   """Format a protobuf node as uiautomator-dump-compatible <node> XML."""
@@ -204,7 +234,12 @@ def _raw_xml_node(node: Any, children_by_id: dict[int, list[Any]],
       f'scrollable="{_bool_str(node.is_scrollable)}" '
       f'selected="{_bool_str(node.is_selected)}" '
       f'checked="{_bool_str(node.is_checked)}" '
+      f'enabled="{_bool_str(node.is_enabled)}" '
+      f'focusable="{_bool_str(node.is_focusable)}" '
+      f'focused="{_bool_str(node.is_focused)}" '
+      f'editable="{_bool_str(node.is_editable)}" '
       f'bounds="{_bounds_str(node)}"'
+      f'{_selection_attrs(node)}'
   )
 
   kids = children_by_id.get(node.unique_id, [])
@@ -294,6 +329,7 @@ def xml_dump_to_ui_elements(xml_string: str) -> list[UIElement]:
         is_checked=node.get('checked') == 'true',
         is_checkable=node.get('checkable') == 'true',
         is_clickable=node.get('clickable') == 'true',
+        is_editable=node.get('editable') == 'true',
         is_enabled=node.get('enabled') == 'true',
         is_focused=node.get('focused') == 'true',
         is_focusable=node.get('focusable') == 'true',
@@ -303,6 +339,16 @@ def xml_dump_to_ui_elements(xml_string: str) -> list[UIElement]:
         package_name=node.get('package'),
         resource_id=node.get('resource-id'),
         is_visible=True,
+        text_selection_start=(
+            int(node['text-selection-start'])
+            if node.get('text-selection-start')
+            else None
+        ),
+        text_selection_end=(
+            int(node['text-selection-end'])
+            if node.get('text-selection-end')
+            else None
+        ),
     )
     if not is_root:
       ui_elements.append(ui_element)
