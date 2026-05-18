@@ -221,6 +221,66 @@ def _selection_attrs(node: Any) -> str:
   return attrs
 
 
+def _has_reportable_cursor_info(node: Any) -> bool:
+  start = getattr(node, 'text_selection_start', -1)
+  end = getattr(node, 'text_selection_end', -1)
+  if start < 0 or end < 0:
+    return False
+
+  if getattr(node, 'is_focused', False) and getattr(node, 'is_editable', False):
+    return True
+
+  return start != end
+
+
+def _cursor_info_node(node: Any) -> str:
+  start = getattr(node, 'text_selection_start', -1)
+  end = getattr(node, 'text_selection_end', -1)
+  cursor_position = (
+      f' cursor-position="{start}"' if start == end and start >= 0 else ''
+  )
+
+  attrs = (
+      f'text="{_escape_xml_attr(node.text or "")}" '
+      f'resource-id="{_escape_xml_attr(node.view_id_resource_name or "")}" '
+      f'class="{_escape_xml_attr(node.class_name or "")}" '
+      f'bounds="{_bounds_str(node)}" '
+      f'focused="{_bool_str(node.is_focused)}" '
+      f'editable="{_bool_str(node.is_editable)}" '
+      f'text-selection-start="{start}" '
+      f'text-selection-end="{end}"'
+      f'{cursor_position}'
+  )
+
+  return f'  <cursor {attrs} />'
+
+
+def forest_to_cursor_info_xml(
+    forest: android_accessibility_forest_pb2.AndroidAccessibilityForest | Any,
+) -> str:
+  """Extract focused text cursor metadata from an accessibility forest.
+
+  uiautomator dump exposes the general node tree but not text selection/cursor
+  offsets. Keep this metadata as a sidecar so it can be consumed without
+  polluting the page hierarchy.
+  """
+  candidates = []
+  for window in forest.windows:
+    for node in window.tree.nodes:
+      if _has_reportable_cursor_info(node):
+        candidates.append(node)
+
+  focused_candidates = [
+      node for node in candidates if getattr(node, 'is_focused', False)
+  ]
+  nodes_to_report = focused_candidates or candidates
+  if not nodes_to_report:
+    return ''
+
+  body = '\n'.join(_cursor_info_node(node) for node in nodes_to_report)
+  return f'<CursorInfo>\n{body}\n</CursorInfo>'
+
+
 def _raw_xml_node(node: Any, children_by_id: dict[int, list[Any]],
                   indent: int) -> str:
   """Format a protobuf node as uiautomator-dump-compatible <node> XML."""

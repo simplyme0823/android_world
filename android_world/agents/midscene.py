@@ -3,9 +3,11 @@
 
 
 from android_world.agents import base_agent
+from android_world.env import adb_utils
 from android_world.env import interface
 from android_world.env import representation_utils
 
+import json
 import requests
 import os
 import time
@@ -150,26 +152,45 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     return result
 
   def _start_dom_server(self):
-    """Starts a background HTTP server that serves the current a11y tree as raw XML."""
+    """Starts a background HTTP server that serves page XML and cursor metadata."""
     agent_ref = self
 
     class DomHandler(BaseHTTPRequestHandler):
+      def _write_response(self, status: int, content_type: str, body: str):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.end_headers()
+        self.wfile.write(body.encode('utf-8'))
+
+      def _get_cursor_xml(self) -> str:
+        state = agent_ref.env.get_state()
+        if state.forest is None:
+          return ''
+        return representation_utils.forest_to_cursor_info_xml(state.forest)
+
+      def _get_page_xml(self) -> str:
+        return adb_utils.uiautomator_dump(agent_ref.env.controller)
+
       def do_GET(self):
         try:
-          state = agent_ref.env.get_state()
-          if state.forest is not None:
-            raw_xml = representation_utils.forest_to_raw_xml(state.forest)
+          if self.path == '/cursor':
+            cursor_xml = self._get_cursor_xml()
+            self._write_response(200, 'text/xml; charset=utf-8', cursor_xml)
+          elif self.path == '/context':
+            # Read cursor metadata before uiautomator dump because dump can
+            # transiently disrupt AccessibilityForwarder on some devices.
+            cursor_xml = self._get_cursor_xml()
+            page_xml = self._get_page_xml()
+            body = json.dumps({
+                'pageXml': page_xml,
+                'cursorXml': cursor_xml,
+            })
+            self._write_response(200, 'application/json; charset=utf-8', body)
           else:
-            raw_xml = ''
-          self.send_response(200)
-          self.send_header('Content-Type', 'text/xml; charset=utf-8')
-          self.end_headers()
-          self.wfile.write(raw_xml.encode('utf-8'))
+            page_xml = self._get_page_xml()
+            self._write_response(200, 'text/xml; charset=utf-8', page_xml)
         except Exception as e:
-          self.send_response(500)
-          self.send_header('Content-Type', 'text/plain')
-          self.end_headers()
-          self.wfile.write(str(e).encode('utf-8'))
+          self._write_response(500, 'text/plain', str(e))
 
       def log_message(self, format, *args):
         pass  # Suppress default access logs
@@ -177,7 +198,7 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     server = HTTPServer(('127.0.0.1', 0), DomHandler)
     port = server.server_address[1]
     self._dom_server = server
-    self._dom_server_url = f'http://127.0.0.1:{port}/dom'
+    self._dom_server_url = f'http://127.0.0.1:{port}/context'
     self._formatted_console(f"DOM provider server started at {self._dom_server_url}")
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)

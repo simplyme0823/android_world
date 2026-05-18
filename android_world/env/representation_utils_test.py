@@ -28,6 +28,30 @@ class BoundsInScreen:
   bottom: int
 
 
+@dataclasses.dataclass
+class FakeNode:
+  text: str = ''
+  view_id_resource_name: str = ''
+  class_name: str = ''
+  bounds_in_screen: BoundsInScreen = dataclasses.field(
+      default_factory=lambda: BoundsInScreen(1, 3, 2, 4)
+  )
+  is_focused: bool = False
+  is_editable: bool = False
+  text_selection_start: int = 0
+  text_selection_end: int = 0
+
+
+def _fake_forest(nodes: list[FakeNode]):
+  tree = mock.MagicMock()
+  tree.nodes = nodes
+  window = mock.MagicMock()
+  window.tree = tree
+  forest = mock.MagicMock()
+  forest.windows = [window]
+  return forest
+
+
 class TestAccessibilityNodeToUIElement(parameterized.TestCase):
 
   @parameterized.named_parameters(
@@ -113,6 +137,64 @@ class TestAccessibilityNodeToUIElement(parameterized.TestCase):
           ui_element.bbox_pixels, screen_size
       )
     self.assertEqual(ui_element.bbox, expected_normalized_bbox)
+
+
+class TestForestToCursorInfoXml(absltest.TestCase):
+
+  def test_focused_editable_zero_cursor_is_reported(self):
+    forest = _fake_forest([
+        FakeNode(
+            text='hello & bye',
+            view_id_resource_name='pkg:id/editor',
+            class_name='android.widget.EditText',
+            is_focused=True,
+            is_editable=True,
+            text_selection_start=0,
+            text_selection_end=0,
+        )
+    ])
+
+    self.assertEqual(
+        representation_utils.forest_to_cursor_info_xml(forest),
+        '<CursorInfo>\n'
+        '  <cursor text="hello &amp; bye" resource-id="pkg:id/editor" '
+        'class="android.widget.EditText" bounds="[1,2][3,4]" '
+        'focused="true" editable="true" text-selection-start="0" '
+        'text-selection-end="0" cursor-position="0" />\n'
+        '</CursorInfo>',
+    )
+
+  def test_unfocused_default_selection_is_ignored(self):
+    forest = _fake_forest([
+        FakeNode(
+            text='hello',
+            class_name='android.widget.TextView',
+            text_selection_start=0,
+            text_selection_end=0,
+        )
+    ])
+
+    self.assertEqual(representation_utils.forest_to_cursor_info_xml(forest), '')
+
+  def test_selection_range_without_focus_is_reported(self):
+    forest = _fake_forest([
+        FakeNode(
+            text='abcdef',
+            class_name='android.widget.TextView',
+            text_selection_start=1,
+            text_selection_end=4,
+        )
+    ])
+
+    self.assertEqual(
+        representation_utils.forest_to_cursor_info_xml(forest),
+        '<CursorInfo>\n'
+        '  <cursor text="abcdef" resource-id="" '
+        'class="android.widget.TextView" bounds="[1,2][3,4]" '
+        'focused="false" editable="false" text-selection-start="1" '
+        'text-selection-end="4" />\n'
+        '</CursorInfo>',
+    )
 
 
 if __name__ == '__main__':
