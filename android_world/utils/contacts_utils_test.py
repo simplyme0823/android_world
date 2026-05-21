@@ -174,6 +174,27 @@ class TestContactsUtils(absltest.TestCase):
 
     self.assertEqual(mock_click_element.call_count, 2)
 
+  def test_add_contact_verified_retries_after_add_contact_exception(
+      self, mock_click_element, mock_generic_request
+  ):
+    mock_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_click_element.side_effect = [ValueError("SAVE not found"), None]
+    mock_generic_request.side_effect = [
+        _EMPTY_RESPONSE,
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Gabriel Ibrahim, number=+19696338338"),
+    ]
+
+    contacts_utils.add_contact_verified(
+        "Gabriel Ibrahim",
+        "+19696338338",
+        mock_env,
+        ui_delay_sec=0,
+        retry_delay_sec=0,
+    )
+
+    self.assertEqual(mock_click_element.call_count, 2)
+
   def test_add_contact_verified_raises_after_retries(
       self, mock_click_element, mock_generic_request
   ):

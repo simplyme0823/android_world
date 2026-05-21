@@ -158,22 +158,38 @@ def add_contact_verified(
   if max_attempts < 1:
     raise ValueError("max_attempts must be at least 1.")
 
+  last_error = None
   for attempt in range(1, max_attempts + 1):
-    add_contact(name, phone_number, env, ui_delay_sec=ui_delay_sec)
-    if has_contact(name, phone_number, env):
-      return
-
-    logging.warning(
-        "Contact creation not verified: %s %s, attempt %d/%d",
-        name,
-        phone_number,
-        attempt,
-        max_attempts,
-    )
+    try:
+      add_contact(name, phone_number, env, ui_delay_sec=ui_delay_sec)
+      if has_contact(name, phone_number, env):
+        return
+    except Exception as err:
+      last_error = err
+      logging.warning(
+          "Contact creation attempt failed: %s %s, attempt %d/%d",
+          name,
+          phone_number,
+          attempt,
+          max_attempts,
+          exc_info=True,
+      )
+    else:
+      last_error = None
+      logging.warning(
+          "Contact creation not verified: %s %s, attempt %d/%d",
+          name,
+          phone_number,
+          attempt,
+          max_attempts,
+      )
     if attempt < max_attempts:
       time.sleep(retry_delay_sec)
 
-  raise RuntimeError(f"Failed to create contact: {name} {phone_number}")
+  error_message = f"Failed to create contact: {name} {phone_number}"
+  if last_error is not None:
+    raise RuntimeError(error_message) from last_error
+  raise RuntimeError(error_message)
 
 
 def clear_contacts(env: android_world_controller.AndroidWorldController):
