@@ -547,6 +547,9 @@ class BrowserDraw(BrowserTask):
 
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     const taskColorsElement = document.getElementById('taskColors');
     const colorPalette = document.getElementById('colorPalette');
     const clearButton = document.getElementById('clearButton');
@@ -622,15 +625,19 @@ class BrowserDraw(BrowserTask):
 
     function evaluateTask() {
       const pixelData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      const usedColors = new Set();
+      const colorCounts = Object.fromEntries(
+        taskColors.map(color => [color, 0])
+      );
       for (let i = 0; i < pixelData.length; i += 4) {
         const r = pixelData[i];
         const g = pixelData[i + 1];
         const b = pixelData[i + 2];
         const color = rgbToHex(r, g, b);
-        usedColors.add(color);
+        if (color in colorCounts) {
+          colorCounts[color]++;
+        }
       }
-      const success = taskColors.every(color => usedColors.has(color));
+      const success = taskColors.every(color => colorCounts[color] > 0);
       showResult(success);
     }
 
