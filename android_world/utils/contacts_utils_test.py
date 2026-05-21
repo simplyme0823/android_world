@@ -22,6 +22,15 @@ from android_world.env import adb_utils
 from android_world.utils import contacts_utils
 
 
+def _adb_response(output: str = ""):
+  response = adb_pb2.AdbResponse()
+  response.generic.output = output.encode("utf-8")
+  return response
+
+
+_EMPTY_RESPONSE = _adb_response()
+
+
 @mock.patch.object(adb_utils, "issue_generic_request")
 @mock.patch.object(actuation, "find_and_click_element")
 class TestContactsUtils(absltest.TestCase):
@@ -100,6 +109,94 @@ class TestContactsUtils(absltest.TestCase):
 
     # Assert that the correct adb command was issued
     mock_generic_request.assert_called_once_with(expected_adb_command, mock_env)
+
+  def test_has_contact_exact_number(
+      self, unused_mock_click_element, mock_generic_request
+  ):
+    mock_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_generic_request.return_value = _adb_response(
+        "Row: 0 display_name=Gabriel Ibrahim, number=+19696338338"
+    )
+
+    self.assertTrue(
+        contacts_utils.has_contact("Gabriel Ibrahim", "+19696338338", mock_env)
+    )
+
+  def test_has_contact_matches_formatted_us_number(
+      self, unused_mock_click_element, mock_generic_request
+  ):
+    mock_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_generic_request.return_value = _adb_response(
+        "Row: 0 display_name=Gabriel Ibrahim, number=(969) 633-8338"
+    )
+
+    self.assertTrue(
+        contacts_utils.has_contact("Gabriel Ibrahim", "+19696338338", mock_env)
+    )
+
+  def test_add_contact_verified_success_first_attempt(
+      self, mock_click_element, mock_generic_request
+  ):
+    mock_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_generic_request.side_effect = [
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Gabriel Ibrahim, number=+19696338338"),
+    ]
+
+    contacts_utils.add_contact_verified(
+        "Gabriel Ibrahim",
+        "+19696338338",
+        mock_env,
+        ui_delay_sec=0,
+        retry_delay_sec=0,
+    )
+
+    mock_click_element.assert_called_once_with("SAVE", mock_env)
+
+  def test_add_contact_verified_retries_until_present(
+      self, mock_click_element, mock_generic_request
+  ):
+    mock_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_generic_request.side_effect = [
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Oscar Mohamed, number=+14379969633"),
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Gabriel Ibrahim, number=+19696338338"),
+    ]
+
+    contacts_utils.add_contact_verified(
+        "Gabriel Ibrahim",
+        "+19696338338",
+        mock_env,
+        ui_delay_sec=0,
+        retry_delay_sec=0,
+    )
+
+    self.assertEqual(mock_click_element.call_count, 2)
+
+  def test_add_contact_verified_raises_after_retries(
+      self, mock_click_element, mock_generic_request
+  ):
+    mock_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_generic_request.side_effect = [
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Oscar Mohamed, number=+14379969633"),
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Oscar Mohamed, number=+14379969633"),
+        _EMPTY_RESPONSE,
+        _adb_response("Row: 0 display_name=Oscar Mohamed, number=+14379969633"),
+    ]
+
+    with self.assertRaisesRegex(RuntimeError, "Failed to create contact"):
+      contacts_utils.add_contact_verified(
+          "Gabriel Ibrahim",
+          "+19696338338",
+          mock_env,
+          ui_delay_sec=0,
+          retry_delay_sec=0,
+      )
+
+    self.assertEqual(mock_click_element.call_count, 3)
 
 
 if __name__ == "__main__":

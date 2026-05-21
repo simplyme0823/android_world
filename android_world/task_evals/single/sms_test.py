@@ -396,7 +396,10 @@ class TestSimpleSmsSendReceivedAddress(test_utils.AdbEvalTestBase):
 
     # Mock controller methods
     self.mock_add_contact = mock.patch.object(
-        contacts_utils, 'add_contact'
+        contacts_utils, 'add_contact_verified'
+    ).start()
+    self.mock_wait_for_received_message = mock.patch.object(
+        sms_validators, 'wait_for_received_message'
     ).start()
 
     # Mock adb_utils methods
@@ -456,6 +459,30 @@ class TestSimpleSmsSendReceivedAddress(test_utils.AdbEvalTestBase):
         env.controller, self.random_number, '100 Main Street'
     )
     self.mock_enable_notifications.assert_called_once()
+
+  def test_initialize_task_enables_notifications_on_contact_setup_failure(self):
+    name1 = 'Jane Smith'
+    name1_number = '1444554333'
+    name2 = 'John Smith'
+    env = mock.MagicMock()
+    params = {
+        'name1': name1,
+        'number': name1_number,
+        'name2': name2,
+        'message': '100 Main Street',
+    }
+    self.mock_add_contact.side_effect = RuntimeError(
+        'Failed to create contact'
+    )
+
+    task = sms.SimpleSmsSendReceivedAddress(params)
+    with self.assertRaisesRegex(RuntimeError, 'Failed to create contact'):
+      task.initialize_task(env)
+
+    self.mock_disable_notifications.assert_called_once()
+    self.mock_enable_notifications.assert_called_once()
+    self.mock_text_emulator.assert_not_called()
+    self.mock_wait_for_received_message.assert_not_called()
 
   def test_is_successful(self):
     # Create contacts

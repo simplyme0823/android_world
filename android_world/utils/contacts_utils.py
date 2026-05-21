@@ -19,6 +19,7 @@ import re
 import time
 from typing import Iterator
 
+from absl import logging
 from android_world.env import actuation
 from android_world.env import adb_utils
 from android_world.env import android_world_controller
@@ -105,6 +106,74 @@ def list_contacts(
           ).generic.output.decode("utf-8")
       )
   )
+
+
+def _canonicalize_us_phone_number(phone_number: str) -> str:
+  """Returns the 10-digit national number for an AndroidWorld US phone number."""
+  phone_number = clean_phone_number(phone_number)
+
+  if len(phone_number) == 11 and phone_number.startswith("1"):
+    return phone_number[1:]
+
+  if len(phone_number) >= 10:
+    return phone_number[-10:]
+
+  return phone_number
+
+
+def _phone_numbers_match(actual_number: str, expected_number: str) -> bool:
+  """Returns whether two AndroidWorld US phone number strings match."""
+  return _canonicalize_us_phone_number(actual_number) == (
+      _canonicalize_us_phone_number(expected_number)
+  )
+
+
+def has_contact(
+    name: str,
+    phone_number: str,
+    env: android_world_controller.AndroidWorldController,
+) -> bool:
+  """Returns whether the contact exists on the device."""
+  return any(
+      contact.name == name
+      and _phone_numbers_match(contact.number, phone_number)
+      for contact in list_contacts(env)
+  )
+
+
+def add_contact_verified(
+    name: str,
+    phone_number: str,
+    env: android_world_controller.AndroidWorldController,
+    max_attempts: int = 3,
+    ui_delay_sec: float = 1.0,
+    retry_delay_sec: float = 2.0,
+):
+  """Adds a contact and verifies it exists in the Contacts provider.
+
+  The Contacts app UI can occasionally expose stale or off-screen SAVE buttons.
+  Retrying against the device state keeps task setup failures from leaking into
+  agent execution as missing-contact tasks.
+  """
+  if max_attempts < 1:
+    raise ValueError("max_attempts must be at least 1.")
+
+  for attempt in range(1, max_attempts + 1):
+    add_contact(name, phone_number, env, ui_delay_sec=ui_delay_sec)
+    if has_contact(name, phone_number, env):
+      return
+
+    logging.warning(
+        "Contact creation not verified: %s %s, attempt %d/%d",
+        name,
+        phone_number,
+        attempt,
+        max_attempts,
+    )
+    if attempt < max_attempts:
+      time.sleep(retry_delay_sec)
+
+  raise RuntimeError(f"Failed to create contact: {name} {phone_number}")
 
 
 def clear_contacts(env: android_world_controller.AndroidWorldController):
