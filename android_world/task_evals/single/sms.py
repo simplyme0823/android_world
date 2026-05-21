@@ -246,61 +246,61 @@ class SimpleSmsSendReceivedAddress(sms_validators.SimpleSMSSendSms):
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     adb_utils.disable_headsup_notifications(env.controller)
-    super().initialize_task(env)
+    try:
+      super().initialize_task(env)
 
-    name2_number = user_data_generation.generate_random_number()
-    contacts_utils.add_contact(
-        self.params["name1"], self.params["number"], env.controller
-    )
-    time.sleep(5.0)
-    contacts_utils.add_contact(
-        self.params["name2"], name2_number, env.controller
-    )
-
-    # Send SMS containing address from name2 and verify delivery.
-    # Retry the full send+verify cycle to handle transient emulator issues,
-    # ensuring the Agent can see the message when the task starts.
-    max_sms_retries = 3
-    sms_delivered = False
-    for sms_attempt in range(max_sms_retries):
-      try:
-        adb_utils.text_emulator(
-            env.controller,
-            name2_number,
-            self.params["message"],
-        )
-      except RuntimeError:
-        logging.warning(
-            'text_emulator failed (attempt %d/%d), retrying...',
-            sms_attempt + 1, max_sms_retries,
-        )
-        time.sleep(2)
-        continue
-
-      try:
-        sms_validators.wait_for_received_message(
-            env.controller,
-            name2_number,
-            timeout_sec=30.0,
-        )
-        sms_delivered = True
-        break
-      except TimeoutError:
-        logging.warning(
-            'SMS not received (attempt %d/%d), retrying send+verify...',
-            sms_attempt + 1, max_sms_retries,
-        )
-        time.sleep(2)
-        continue
-
-    if not sms_delivered:
-      adb_utils.enable_headsup_notifications(env.controller)
-      raise ValueError(
-          f"SMS delivery failed after {max_sms_retries} attempts. "
-          "The emulator may have failed to deliver the SMS."
+      name2_number = user_data_generation.generate_random_number()
+      contacts_utils.add_contact_verified(
+          self.params["name1"], self.params["number"], env.controller
+      )
+      time.sleep(5.0)
+      contacts_utils.add_contact_verified(
+          self.params["name2"], name2_number, env.controller
       )
 
-    adb_utils.enable_headsup_notifications(env.controller)
+      # Send SMS containing address from name2 and verify delivery.
+      # Retry the full send+verify cycle to handle transient emulator issues,
+      # ensuring the Agent can see the message when the task starts.
+      max_sms_retries = 3
+      sms_delivered = False
+      for sms_attempt in range(max_sms_retries):
+        try:
+          adb_utils.text_emulator(
+              env.controller,
+              name2_number,
+              self.params["message"],
+          )
+        except RuntimeError:
+          logging.warning(
+              'text_emulator failed (attempt %d/%d), retrying...',
+              sms_attempt + 1, max_sms_retries,
+          )
+          time.sleep(2)
+          continue
+
+        try:
+          sms_validators.wait_for_received_message(
+              env.controller,
+              name2_number,
+              timeout_sec=30.0,
+          )
+          sms_delivered = True
+          break
+        except TimeoutError:
+          logging.warning(
+              'SMS not received (attempt %d/%d), retrying send+verify...',
+              sms_attempt + 1, max_sms_retries,
+          )
+          time.sleep(2)
+          continue
+
+      if not sms_delivered:
+        raise ValueError(
+            f"SMS delivery failed after {max_sms_retries} attempts. "
+            "The emulator may have failed to deliver the SMS."
+        )
+    finally:
+      adb_utils.enable_headsup_notifications(env.controller)
 
   def tear_down(self, env: interface.AsyncEnv):
     super().tear_down(env)
