@@ -169,7 +169,37 @@ def generate_random_tasks(
   return sqlite_schema_utils.get_random_items(
       num_tasks,
       generate_item_fn=_generate_random_task,
-      filter_fn=lambda x: check_task_conditions(x, exclusion_conditions),
+      filter_fn=lambda x: _is_valid_random_task(x, exclusion_conditions),
+  )
+
+
+def _is_valid_random_task(
+    task: sqlite_schema_utils.Task,
+    exclusion_conditions: list[task_pb2.ExclusionCondition],
+) -> bool:
+  """Returns whether a task is a valid random distractor."""
+  if not check_task_conditions(task, exclusion_conditions):
+    return False
+
+  # Completed Tasks rows can visually look like high-priority due-date matches
+  # even when the expected answer only comes from relevant_state. Avoid creating
+  # completed same-date distractors for tasks that query by due date and priority.
+  has_priority_condition = any(
+      condition.field == 'importance' for condition in exclusion_conditions
+  )
+  if not has_priority_condition or task.completed == 0:
+    return True
+
+  return not any(
+      condition.field == 'due_date'
+      and proto_utils.compare(
+          datetime_utils.timestamp_to_localized_datetime(
+              int(task.dueDate / 1000)
+          ).date(),
+          condition.operation,
+          datetime_utils_ir.get_date(condition.value),
+      )
+      for condition in exclusion_conditions
   )
 
 

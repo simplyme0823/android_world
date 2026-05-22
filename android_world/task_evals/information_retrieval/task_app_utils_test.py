@@ -151,6 +151,67 @@ class TaskAppUtilsTest(parameterized.TestCase):
         expected_value,
     )
 
+  def test_valid_random_task_rejects_completed_same_due_date_for_priority_query(
+      self,
+  ):
+    task = task_app_utils.create_task_from_proto(
+        state_pb2.TasksAppTask(
+            completed_date='October 10 2023',
+            completed_time='12:30',
+            due_date='October 18 2023',
+            due_time='12:30',
+            importance='2',
+            title='Meeting',
+        )
+    )
+    exclusion_conditions = [
+        task_pb2.ExclusionCondition(
+            field='due_date',
+            value='October 18 2023',
+            operation=task_pb2.ExclusionCondition.Operation.EQUAL_TO,
+        ),
+        task_pb2.ExclusionCondition(
+            field='importance',
+            value='0',
+            operation=task_pb2.ExclusionCondition.Operation.EQUAL_TO,
+        ),
+    ]
+
+    self.assertTrue(
+        task_app_utils.check_task_conditions(task, exclusion_conditions)
+    )
+    self.assertFalse(
+        task_app_utils._is_valid_random_task(task, exclusion_conditions)
+    )
+
+  def test_valid_random_task_allows_incomplete_same_due_date_non_priority(
+      self,
+  ):
+    task = task_app_utils.create_task_from_proto(
+        state_pb2.TasksAppTask(
+            due_date='October 18 2023',
+            due_time='12:30',
+            importance='2',
+            title='Meeting',
+        )
+    )
+    exclusion_conditions = [
+        task_pb2.ExclusionCondition(
+            field='due_date',
+            value='October 18 2023',
+            operation=task_pb2.ExclusionCondition.Operation.EQUAL_TO,
+        ),
+        task_pb2.ExclusionCondition(
+            field='importance',
+            value='0',
+            operation=task_pb2.ExclusionCondition.Operation.EQUAL_TO,
+        ),
+    ]
+
+    self.assertTrue(
+        task_app_utils._is_valid_random_task(task, exclusion_conditions)
+    )
+
 
 if __name__ == '__main__':
   absltest.main()
