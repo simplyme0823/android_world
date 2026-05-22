@@ -104,6 +104,44 @@ class TestMessageWasSent(absltest.TestCase):
     )
 
 
+class TestHasMatchingSentMessage(absltest.TestCase):
+
+  def test_matches_expired_message(self):
+    # The final evaluator should not fail just because the benchmark spent too
+    # long after sending the SMS.
+    one_day_ago = int(time.time() * 1000) - 24 * 60 * 60 * 1000
+    messages = [f'Row: 0 _id=1, address=1111, body=Hi, date={one_day_ago}']
+
+    self.assertTrue(
+        sms_validators.has_matching_sent_message(messages, '1111', 'Hi')
+    )
+
+  def test_ignores_messages_present_at_initialize_time(self):
+    old_message = 'Row: 0 _id=1, address=1111, body=Hi, date=1000'
+
+    self.assertFalse(
+        sms_validators.has_matching_sent_message(
+            [old_message],
+            '1111',
+            'Hi',
+            ignored_messages=[old_message],
+        )
+    )
+
+  def test_accepts_new_matching_message_after_initialize_time(self):
+    old_message = 'Row: 0 _id=1, address=1111, body=Hi, date=1000'
+    new_message = 'Row: 0 _id=2, address=1111, body=Hi, date=2000'
+
+    self.assertTrue(
+        sms_validators.has_matching_sent_message(
+            [new_message, old_message],
+            '1111',
+            'Hi',
+            ignored_messages=[old_message],
+        )
+    )
+
+
 class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
 
   def setUp(self):
@@ -122,20 +160,15 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
         str(int(time.time()))
     ).encode()
 
-    # Make stale message.
-    one_day_s = 24 * 60 * 60
+    # No matching sent message at task start.
     mock_response_sms0 = adb_pb2.AdbResponse()
-    date0_ms = str(int((time.time() - one_day_s) * 1000))
-    mock_response_sms0.generic.output = (
-        'Row: 0, address=1234567890, body=Hello World, service_center=NULL,'
-        ' date={}'.format(
-            date0_ms
-        ).encode()
-    )
+    mock_response_sms0.generic.output = b'No result found.'
 
-    # Successful message.
+    # Successful message. It may be older than the former freshness window by
+    # the time validation runs.
+    one_day_s = 24 * 60 * 60
     mock_response_sms1 = adb_pb2.AdbResponse()
-    date1_ms = str(int(time.time() * 1000))
+    date1_ms = str(int((time.time() - one_day_s) * 1000))
     mock_response_sms1.generic.output = (
         'Row: 0, address=1234567890, body=Hello World, service_center=NULL,'
         ' date={}'.format(
