@@ -202,6 +202,47 @@ def was_sent(
   return False
 
 
+def _sent_message_signature(message: str) -> tuple[str, str, int]:
+  """Returns the comparable fields for a sent SMS row."""
+  fields = parse_message(message)
+  try:
+    # Number can contain spaces and dashes, remove before comparing.
+    msg_number = fields["address"].replace("-", "").replace(" ", "")
+    msg_body = fields["body"]
+    msg_date = int(fields["date"])
+  except KeyError as key_error:
+    raise ValueError(
+        "Could not find the address, body, and date fields for message:"
+        f" {message}"
+    ) from key_error
+
+  return msg_number, msg_body, msg_date
+
+
+def has_matching_sent_message(
+    messages: list[str],
+    phone_number: str,
+    body: str,
+    ignored_messages: list[str] | tuple[str, ...] = (),
+) -> bool:
+  """Checks whether a matching sent SMS exists, regardless of age."""
+  ignored_signatures = {
+      _sent_message_signature(message) for message in ignored_messages
+  }
+
+  for message in messages:
+    msg_number, msg_body, msg_date = _sent_message_signature(message)
+    if (msg_number, msg_body, msg_date) in ignored_signatures:
+      continue
+
+    if msg_number == phone_number and fuzzy_match_lib.fuzzy_match(
+        msg_body, body
+    ):
+      return True
+
+  return False
+
+
 def sms_are_equal(message1: str, message2: str) -> bool:
   """Checks if two messages are equal.
 
@@ -288,6 +329,7 @@ class SimpleSMSSendSms(task_eval.TaskEval):
     android_time = self.get_android_time(env.controller)
 
     messages = self.get_sent_messages(env.controller)
+    self._initial_sent_messages = tuple(messages)
     time.sleep(5)
     logging.info("During initialize_task, messages: %s", messages)
     if was_sent(
@@ -308,11 +350,15 @@ class SimpleSMSSendSms(task_eval.TaskEval):
     time.sleep(5)
     logging.info("During is_successful, messages: %s", messages)
     current_time_ms = self.get_android_time(env.controller)
-    sms_was_sent = was_sent(
+    initial_sent_messages = getattr(self, "_initial_sent_messages", ())
+    # Some agents may send the SMS correctly, then spend several minutes in
+    # post-send confirmation before AndroidWorld validates the task. Accept any
+    # new matching sent row instead of applying the setup-time freshness window.
+    sms_was_sent = has_matching_sent_message(
         messages,
         phone_number=self.params["number"],
         body=self.params["message"],
-        current_time_ms=current_time_ms,
+        ignored_messages=initial_sent_messages,
     )
     current_activity = adb_utils.get_current_activity(env.controller)[0]
     current_package = adb_utils.extract_package_name(current_activity)
@@ -323,6 +369,9 @@ class SimpleSMSSendSms(task_eval.TaskEval):
     self.add_validation_log(f'  - Expected number: {self.params["number"]}')
     self.add_validation_log(f'  - Expected message: {self.params["message"]}')
     self.add_validation_log(f'  - Current time (ms): {current_time_ms}')
+    self.add_validation_log(
+        f'  - Initial sent messages count: {len(initial_sent_messages)}'
+    )
     self.add_validation_log(f'  - Sent messages count: {len(messages)}')
     for i, msg in enumerate(messages):
       self.add_validation_log(f'    [{i}] {msg}')
