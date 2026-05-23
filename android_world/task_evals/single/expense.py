@@ -28,11 +28,14 @@ from android_world.task_evals.utils import sqlite_utils
 from android_world.task_evals.utils import user_data_generation
 from android_world.utils import datetime_utils
 from android_world.utils import file_utils
+from android_world.utils import fuzzy_match_lib
 
 _DB_PATH = '/data/data/com.arduia.expense/databases/accounting.db'
 _TABLE_NAME = 'expense'
 _APP_NAME = 'pro expense'
 _DB_KEY = 'expense_id'
+_REIMBURSABLE_NOTE_MARKER = 'Reimbursable.'
+_REIMBURSABLE_NOTE_SUFFIX = '. Reimbursable.'
 
 # How to represent recipes in text form.
 _TEXT_REPRESENTATION_TYPE = 'text_representation_type'
@@ -43,6 +46,22 @@ def _get_random_timestamp() -> int:
   return datetime_utils.create_random_october_2023_unix_ts(
       start_day=1, end_day=15
   )
+
+
+def _normalize_markor_reimbursable_note(note: str | None) -> str | None:
+  """Normalizes optional Markor reimbursable note markers."""
+  if note is None:
+    return None
+
+  normalized_note = str(note).strip()
+  if normalized_note.endswith(_REIMBURSABLE_NOTE_MARKER):
+    normalized_note = normalized_note[
+        : -len(_REIMBURSABLE_NOTE_MARKER)
+    ].rstrip()
+  if normalized_note.endswith('.'):
+    normalized_note = normalized_note[:-1].rstrip()
+
+  return normalized_note
 
 
 class _Expense(task_eval.TaskEval, abc.ABC):
@@ -342,7 +361,7 @@ class ExpenseAddMultipleFromMarkor(_ExpenseAddMultiple):
   def initialize_task(self, env: interface.AsyncEnv):
     super().initialize_task(env)
     targets = [
-        dataclasses.replace(row, note=row.note + '. ' + 'Reimbursable.')
+        dataclasses.replace(row, note=row.note + _REIMBURSABLE_NOTE_SUFFIX)
         for row in self.params[sqlite_validators.ROW_OBJECTS]
     ]
     rows = targets + self.params[sqlite_validators.NOISE_ROW_OBJECTS]
@@ -357,6 +376,44 @@ class ExpenseAddMultipleFromMarkor(_ExpenseAddMultiple):
   def tear_down(self, env: interface.AsyncEnv):
     super().tear_down(env)
     file_utils.clear_directory(device_constants.MARKOR_DATA, env.controller)
+
+  def validate_addition_integrity(
+      self,
+      before: list[sqlite_schema_utils.Expense],
+      after: list[sqlite_schema_utils.Expense],
+      reference_rows: list[sqlite_schema_utils.Expense],
+  ) -> bool:
+    """Allows Markor's reimbursable marker to be copied into expense notes."""
+    def db_row_matches_reference(
+        reference_row: sqlite_schema_utils.Expense,
+        row: sqlite_schema_utils.Expense,
+    ) -> bool:
+      if not fuzzy_match_lib.fuzzy_match(reference_row.name, row.name):
+        return False
+      if reference_row.amount != row.amount:
+        return False
+      if reference_row.category != row.category:
+        return False
+
+      return fuzzy_match_lib.fuzzy_match(
+          _normalize_markor_reimbursable_note(reference_row.note),
+          _normalize_markor_reimbursable_note(row.note),
+      )
+
+    for reference_row in reference_rows:
+      if not any(
+          db_row_matches_reference(reference_row, row) for row in after
+      ):
+        return False
+
+    if len(after) != len(before) + len(reference_rows):
+      return False
+
+    for row in before:
+      if row not in after:
+        return False
+
+    return True
 
 
 class ExpenseAddMultipleFromGallery(_ExpenseAddMultiple):
