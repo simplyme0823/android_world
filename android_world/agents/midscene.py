@@ -6,7 +6,6 @@ from android_world.agents import base_agent
 from android_world.env import interface
 from android_world.env import representation_utils
 
-import json
 import requests
 import os
 import time
@@ -31,7 +30,6 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     self.failed_step_reason = ''
     self._dom_server = None
     self._dom_server_url = None
-    self._last_non_empty_page_xml = ''
     self._start_dom_server()
 
   def reset(self, go_home: bool = False) -> None:
@@ -39,13 +37,11 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     # Hide pointer-location traces that can confuse vision-based drawing tasks.
     self.env.hide_automation_ui()
     self.step_count = 0
-    self._last_non_empty_page_xml = ''
 
   def start_new_task(self, task_name: str, task_id: str) -> None:
     """Starts a new task."""
     self._formatted_console("Starting new task, name:  " + task_name + " id: " + task_id)
     self.current_task_name = "Task-" + task_id + "-" +  str(task_name)
-    self._last_non_empty_page_xml = ''
 
     device = { "type": "Android" }
 
@@ -154,7 +150,7 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     return result
 
   def _start_dom_server(self):
-    """Starts a background HTTP server that serves page XML and cursor metadata."""
+    """Starts a background HTTP server that serves page XML."""
     agent_ref = self
 
     class DomHandler(BaseHTTPRequestHandler):
@@ -164,32 +160,19 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
         self.end_headers()
         self.wfile.write(body.encode('utf-8'))
 
-      def _cursor_xml_from_state(self, state) -> str:
-        if state.forest is None:
-          return ''
-        return representation_utils.forest_to_cursor_info_xml(state.forest)
-
       def _page_xml_from_state(self, state) -> str:
         if state.forest is None:
-          return self._fallback_page_xml('empty AccessibilityForwarder forest')
+          agent_ref._formatted_console(
+              'DOM provider got empty AccessibilityForwarder forest; no page XML returned'
+          )
+          return ''
 
         page_xml = representation_utils.forest_to_raw_xml(state.forest)
         if page_xml:
-          agent_ref._last_non_empty_page_xml = page_xml
           return page_xml
 
-        return self._fallback_page_xml('empty AccessibilityForwarder XML')
-
-      def _fallback_page_xml(self, reason: str) -> str:
-        cached_xml = agent_ref._last_non_empty_page_xml
-        if cached_xml:
-          agent_ref._formatted_console(
-              f'DOM provider got {reason}; using last non-empty page XML'
-          )
-          return cached_xml
-
         agent_ref._formatted_console(
-            f'DOM provider got {reason}; no cached page XML available'
+            'DOM provider got empty AccessibilityForwarder XML; no page XML returned'
         )
         return ''
 
@@ -206,29 +189,18 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
           )
         return retry_state
 
-      def _get_cursor_xml(self) -> str:
-        return self._cursor_xml_from_state(self._get_state_with_retry())
-
       def _get_page_xml(self) -> str:
         return self._page_xml_from_state(self._get_state_with_retry())
 
       def do_GET(self):
         try:
-          if self.path == '/cursor':
-            cursor_xml = self._get_cursor_xml()
-            self._write_response(200, 'text/xml; charset=utf-8', cursor_xml)
-          elif self.path == '/context':
+          if self.path == '/context':
             # Page structure and cursor metadata come from the same
-            # AccessibilityForwarder snapshot, avoiding a separate uiautomator
-            # dump that can transiently disrupt accessibility state.
+            # AccessibilityForwarder snapshot. Cursor state is embedded on the
+            # focused editable node as XML attributes.
             state = self._get_state_with_retry()
-            cursor_xml = self._cursor_xml_from_state(state)
             page_xml = self._page_xml_from_state(state)
-            body = json.dumps({
-                'pageXml': page_xml,
-                'cursorXml': cursor_xml,
-            })
-            self._write_response(200, 'application/json; charset=utf-8', body)
+            self._write_response(200, 'text/xml; charset=utf-8', page_xml)
           else:
             page_xml = self._get_page_xml()
             self._write_response(200, 'text/xml; charset=utf-8', page_xml)
