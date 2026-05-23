@@ -161,5 +161,119 @@ class ExpenseAddMultipleTest(absltest.TestCase):
     )
 
 
+class ExpenseAddMultipleFromMarkorTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.task = expense.ExpenseAddMultipleFromMarkor({})
+    self.before = [
+        sqlite_schema_utils.Expense(
+            "Existing", amount=100, category=1, note="Paid by card"
+        )
+    ]
+    self.reference_rows = [
+        sqlite_schema_utils.Expense(
+            "Laundry", amount=9630, category=8, note="Urgent"
+        ),
+        sqlite_schema_utils.Expense(
+            "Car Insurance",
+            amount=30301,
+            category=7,
+            note="I may repeat this",
+        ),
+    ]
+
+  def test_validate_accepts_original_notes(self):
+    after = self.before + self.reference_rows
+
+    self.assertTrue(
+        self.task.validate_addition_integrity(
+            self.before, after, self.reference_rows
+        )
+    )
+
+  def test_validate_accepts_reimbursable_notes(self):
+    after = self.before + [
+        sqlite_schema_utils.Expense(
+            "Laundry",
+            amount=9630,
+            category=8,
+            note="Urgent. Reimbursable.",
+        ),
+        sqlite_schema_utils.Expense(
+            "Car Insurance",
+            amount=30301,
+            category=7,
+            note="I may repeat this. Reimbursable.",
+        ),
+    ]
+
+    self.assertTrue(
+        self.task.validate_addition_integrity(
+            self.before, after, self.reference_rows
+        )
+    )
+
+  def test_validate_accepts_original_notes_with_trailing_period(self):
+    after = self.before + [
+        sqlite_schema_utils.Expense(
+            "Laundry", amount=9630, category=8, note="Urgent."
+        ),
+        sqlite_schema_utils.Expense(
+            "Car Insurance",
+            amount=30301,
+            category=7,
+            note="I may repeat this.",
+        ),
+    ]
+
+    self.assertTrue(
+        self.task.validate_addition_integrity(
+            self.before, after, self.reference_rows
+        )
+    )
+
+  def test_validate_accepts_mixed_reimbursable_notes(self):
+    after = self.before + [
+        sqlite_schema_utils.Expense(
+            "Laundry",
+            amount=9630,
+            category=8,
+            note="Urgent. Reimbursable.",
+        ),
+        sqlite_schema_utils.Expense(
+            "Car Insurance",
+            amount=30301,
+            category=7,
+            note="I may repeat this",
+        ),
+    ]
+
+    self.assertTrue(
+        self.task.validate_addition_integrity(
+            self.before, after, self.reference_rows
+        )
+    )
+
+  def test_validate_rejects_other_note_change(self):
+    after = self.before + [
+        sqlite_schema_utils.Expense(
+            "Laundry", amount=9630, category=8, note="Urgent"
+        ),
+        sqlite_schema_utils.Expense(
+            "Car Insurance",
+            amount=30301,
+            category=7,
+            note="Wrong note",
+        ),
+    ]
+
+    self.assertFalse(
+        self.task.validate_addition_integrity(
+            self.before, after, self.reference_rows
+        )
+    )
+
+
 if __name__ == "__main__":
   absltest.main()
