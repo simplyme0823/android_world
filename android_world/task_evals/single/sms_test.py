@@ -93,8 +93,8 @@ class TestSimpleSmsReplyMostRecent(test_utils.AdbEvalTestBase):
         sms_validators.SimpleSMSSendSms, 'get_android_time'
     ).start()
     self.mock_android_time.return_value = int(time.time())
-    self.mock_get_received_messages = mock.patch.object(
-        sms_validators.SimpleSMSSendSms, '_get_received_messages'
+    self.mock_wait_for_received_message = mock.patch.object(
+        sms_validators, 'wait_for_received_message'
     ).start()
 
     # Mock adb_utils methods
@@ -159,7 +159,7 @@ class TestSimpleSmsReplyMostRecent(test_utils.AdbEvalTestBase):
   def test_initialize_task(self):
     env = mock.MagicMock()
     params = {'number': self.most_recent_number, 'message': 'New message'}
-    self.mock_get_received_messages.return_value = self.initial_state_messages
+    self.mock_wait_for_received_message.return_value = self.initial_state_messages
 
     task = sms.SimpleSmsReplyMostRecent(params)
     task.initialize_task(env)
@@ -185,7 +185,7 @@ class TestSimpleSmsReplyMostRecent(test_utils.AdbEvalTestBase):
         ).encode()
     )
     self.mock_issue_generic_request.side_effect = [mock_sent_message]
-    self.mock_get_received_messages.return_value = self.initial_state_messages
+    self.mock_wait_for_received_message.return_value = self.initial_state_messages
     test_utils.log_mock_calls(self.mock_issue_generic_request)
     env = mock.MagicMock()
     params = {'number': self.most_recent_number, 'message': new_message}
