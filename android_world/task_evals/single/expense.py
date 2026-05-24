@@ -17,7 +17,10 @@
 import abc
 import dataclasses
 import random
+import time
 from typing import Any, Optional
+
+from absl import logging
 from android_world.env import device_constants
 from android_world.env import interface
 from android_world.env.setup_device import apps
@@ -36,6 +39,8 @@ _APP_NAME = 'pro expense'
 _DB_KEY = 'expense_id'
 _REIMBURSABLE_NOTE_MARKER = 'Reimbursable.'
 _REIMBURSABLE_NOTE_SUFFIX = '. Reimbursable.'
+_EXPENSE_TABLE_SETUP_ATTEMPTS = 3
+_EXPENSE_TABLE_SETUP_RETRY_DELAY_SEC = 1.0
 
 # How to represent recipes in text form.
 _TEXT_REPRESENTATION_TYPE = 'text_representation_type'
@@ -79,10 +84,50 @@ class _Expense(task_eval.TaskEval, abc.ABC):
   table_name = _TABLE_NAME
   row_type = sqlite_schema_utils.Expense
 
-  def initialize_task(self, env: interface.AsyncEnv):
-    if not sqlite_utils.table_exists(self.table_name, self.db_path, env):
-      apps.ExpenseApp.setup(env)
-    super().initialize_task(env)
+  def _ensure_expense_table(self, env: interface.AsyncEnv) -> None:
+    """Ensures Pro Expense has created its SQLite schema before DB edits."""
+    if sqlite_utils.table_exists(self.table_name, self.db_path, env):
+      return
+
+    setup_error: Exception | None = None
+    for attempt in range(1, _EXPENSE_TABLE_SETUP_ATTEMPTS + 1):
+      logging.warning(
+          'Pro Expense SQLite table %s missing at %s; running app setup '
+          '(%d/%d).',
+          self.table_name,
+          self.db_path,
+          attempt,
+          _EXPENSE_TABLE_SETUP_ATTEMPTS,
+      )
+      try:
+        apps.ExpenseApp.setup(env)
+      except Exception as error:  # pylint: disable=broad-exception-caught
+        setup_error = error
+        logging.warning(
+            'Pro Expense setup attempt %d/%d failed: %s',
+            attempt,
+            _EXPENSE_TABLE_SETUP_ATTEMPTS,
+            error,
+        )
+
+      if sqlite_utils.table_exists(self.table_name, self.db_path, env):
+        return
+
+      if attempt < _EXPENSE_TABLE_SETUP_ATTEMPTS:
+        time.sleep(_EXPENSE_TABLE_SETUP_RETRY_DELAY_SEC)
+
+    message = (
+        f'Pro Expense setup did not create SQLite table {self.table_name!r} '
+        f'at {self.db_path!r} after '
+        f'{_EXPENSE_TABLE_SETUP_ATTEMPTS} attempts.'
+    )
+    if setup_error is not None:
+      raise RuntimeError(message) from setup_error
+    raise RuntimeError(message)
+
+  def _clear_db(self, env: interface.AsyncEnv) -> None:
+    self._ensure_expense_table(env)
+    super()._clear_db(env)
 
 
 class _ExpenseDeleteMultiple(_Expense, sqlite_validators.DeleteMultipleRows):

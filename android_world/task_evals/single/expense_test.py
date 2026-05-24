@@ -275,5 +275,60 @@ class ExpenseAddMultipleFromMarkorTest(absltest.TestCase):
     )
 
 
+class ExpenseInitializationTest(absltest.TestCase):
+
+  @mock.patch.object(sqlite_validators.SQLiteApp, "_clear_db")
+  @mock.patch.object(expense.apps.ExpenseApp, "setup")
+  @mock.patch.object(expense.sqlite_utils, "table_exists", return_value=True)
+  def test_clear_db_does_not_setup_when_table_exists(
+      self, mock_table_exists, mock_setup, mock_clear_db
+  ):
+    env = mock.Mock()
+    task = ExpenseAddMultipleForTest({})
+
+    task._clear_db(env)
+
+    mock_table_exists.assert_called_once_with(
+        task.table_name, task.db_path, env
+    )
+    mock_setup.assert_not_called()
+    mock_clear_db.assert_called_once_with(env)
+
+  @mock.patch.object(sqlite_validators.SQLiteApp, "_clear_db")
+  @mock.patch.object(expense.apps.ExpenseApp, "setup")
+  @mock.patch.object(
+      expense.sqlite_utils, "table_exists", side_effect=[False, True]
+  )
+  def test_clear_db_runs_setup_when_table_is_missing(
+      self, mock_table_exists, mock_setup, mock_clear_db
+  ):
+    env = mock.Mock()
+    task = ExpenseAddMultipleForTest({})
+
+    task._clear_db(env)
+
+    self.assertEqual(mock_table_exists.call_count, 2)
+    mock_setup.assert_called_once_with(env)
+    mock_clear_db.assert_called_once_with(env)
+
+  @mock.patch.object(sqlite_validators.SQLiteApp, "_clear_db")
+  @mock.patch.object(expense.time, "sleep")
+  @mock.patch.object(expense.apps.ExpenseApp, "setup")
+  @mock.patch.object(expense.sqlite_utils, "table_exists", return_value=False)
+  def test_clear_db_fails_fast_when_setup_does_not_create_table(
+      self, mock_table_exists, mock_setup, mock_sleep, mock_clear_db
+  ):
+    env = mock.Mock()
+    task = ExpenseAddMultipleForTest({})
+
+    with self.assertRaisesRegex(RuntimeError, "did not create SQLite table"):
+      task._clear_db(env)
+
+    self.assertEqual(mock_table_exists.call_count, 4)
+    self.assertEqual(mock_setup.call_count, 3)
+    self.assertEqual(mock_sleep.call_count, 2)
+    mock_clear_db.assert_not_called()
+
+
 if __name__ == "__main__":
   absltest.main()
