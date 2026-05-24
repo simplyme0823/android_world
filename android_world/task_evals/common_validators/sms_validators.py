@@ -22,9 +22,13 @@ from android_env import env_interface
 from android_env.proto import adb_pb2
 from android_world.env import adb_utils
 from android_world.env import interface
+from android_world.env import representation_utils
 from android_world.task_evals import task_eval
 from android_world.task_evals.utils import user_data_generation
 from android_world.utils import fuzzy_match_lib
+
+_SENT_SMS_RECHECK_ATTEMPTS = 3
+_SENT_SMS_RECHECK_INTERVAL_SEC = 10.0
 
 
 def parse_message(row: str) -> dict[str, str]:
@@ -349,17 +353,43 @@ class SimpleSMSSendSms(task_eval.TaskEval):
     messages = self.get_sent_messages(env.controller)
     time.sleep(5)
     logging.info("During is_successful, messages: %s", messages)
-    current_time_ms = self.get_android_time(env.controller)
     initial_sent_messages = getattr(self, "_initial_sent_messages", ())
+
+    def sms_matches(sent_messages: list[str]) -> bool:
+      return has_matching_sent_message(
+          sent_messages,
+          phone_number=self.params["number"],
+          body=self.params["message"],
+          ignored_messages=initial_sent_messages,
+      )
+
     # Some agents may send the SMS correctly, then spend several minutes in
     # post-send confirmation before AndroidWorld validates the task. Accept any
     # new matching sent row instead of applying the setup-time freshness window.
-    sms_was_sent = has_matching_sent_message(
-        messages,
-        phone_number=self.params["number"],
-        body=self.params["message"],
-        ignored_messages=initial_sent_messages,
-    )
+    sms_was_sent = sms_matches(messages)
+    sending_ui_element = None
+    sending_ui_checked = False
+    if not sms_was_sent:
+      sending_ui_checked = True
+      sending_ui_element = _get_sending_ui_element(env)
+      if sending_ui_element is not None:
+        logging.info(
+            "Found sending UI element while validating SMS: %s",
+            _describe_ui_element(sending_ui_element),
+        )
+        for retry_index in range(_SENT_SMS_RECHECK_ATTEMPTS):
+          time.sleep(_SENT_SMS_RECHECK_INTERVAL_SEC)
+          messages = self.get_sent_messages(env.controller)
+          logging.info(
+              "During is_successful retry %d, messages: %s",
+              retry_index + 1,
+              messages,
+          )
+          sms_was_sent = sms_matches(messages)
+          if sms_was_sent:
+            break
+
+    current_time_ms = self.get_android_time(env.controller)
     current_activity = adb_utils.get_current_activity(env.controller)[0]
     current_package = adb_utils.extract_package_name(current_activity)
     in_correct_app = current_package == "com.simplemobiletools.smsmessenger"
@@ -376,12 +406,21 @@ class SimpleSMSSendSms(task_eval.TaskEval):
     for i, msg in enumerate(messages):
       self.add_validation_log(f'    [{i}] {msg}')
     self.add_validation_log(f'  - SMS was sent: {sms_was_sent}')
+    self.add_validation_log(f'  - Sending UI checked: {sending_ui_checked}')
+    if sending_ui_checked:
+      self.add_validation_log(
+          f'  - UI stuck at sending: {sending_ui_element is not None}'
+      )
+      if sending_ui_element is not None:
+        self.add_validation_log(
+            f'  - Sending UI element: {_describe_ui_element(sending_ui_element)}'
+        )
     self.add_validation_log(f'  - Current activity: {current_activity}')
     self.add_validation_log(f'  - Current package: {current_package}')
     self.add_validation_log(f'  - In correct app: {in_correct_app}')
     self.add_validation_log(f'  - Validation result: {sms_was_sent and in_correct_app}')
 
-    if _check_if_stuck_at_sending(env):
+    if sending_ui_element is not None and not sms_was_sent:
       raise ValueError(
           "Message could not be sent due to Android/emulator issue."
       )
@@ -400,8 +439,22 @@ class SimpleSMSSendSms(task_eval.TaskEval):
 
 def _check_if_stuck_at_sending(env: interface.AsyncEnv) -> bool:
   """Checks if the app is stuck at the sending screen."""
+  return _get_sending_ui_element(env) is not None
+
+
+def _get_sending_ui_element(
+    env: interface.AsyncEnv,
+) -> representation_utils.UIElement | None:
+  """Returns the sending UI element if the app appears stuck sending."""
   state = env.get_state()
   for element in state.ui_elements:
     if element.text is not None and element.text.startswith("Sending"):
-      return True
-  return False
+      return element
+  return None
+
+
+def _describe_ui_element(element: representation_utils.UIElement) -> str:
+  return (
+      f"text={element.text!r}, resource_id={element.resource_id!r}, "
+      f"bounds={element.bbox_pixels!r}"
+  )
