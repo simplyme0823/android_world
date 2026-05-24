@@ -18,6 +18,7 @@ from unittest import mock
 from absl.testing import absltest
 from android_env.proto import adb_pb2
 from android_world.env import adb_utils
+from android_world.env import representation_utils
 from android_world.task_evals.common_validators import sms_validators
 from android_world.utils import test_utils
 
@@ -144,6 +145,13 @@ class TestHasMatchingSentMessage(absltest.TestCase):
 
 class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
 
+  def _adb_response(self, output: str | bytes) -> adb_pb2.AdbResponse:
+    response = adb_pb2.AdbResponse()
+    response.generic.output = (
+        output if isinstance(output, bytes) else output.encode()
+    )
+    return response
+
   def setUp(self):
     super().setUp()
     self.extract_package_name = mock.patch.object(
@@ -152,6 +160,10 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
     self.extract_package_name.return_value = (
         'com.simplemobiletools.smsmessenger'
     )
+    self.mock_get_current_activity.return_value = [
+        'com.simplemobiletools.smsmessenger/'
+        'com.simplemobiletools.smsmessenger.activities.ThreadActivity'
+    ]
 
   def test_is_successful(self):
     # From shell date +%s
@@ -192,6 +204,79 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
 
     # Clear sms and threads tables.
     self.assertEqual(self.mock_execute_sql_command.call_count, 2)
+
+  def test_is_successful_skips_sending_ui_check_after_sent_message_found(self):
+    mock_response_time = self._adb_response(str(int(time.time())))
+    mock_response_sms = self._adb_response(
+        'Row: 0, address=1234567890, body=Hello World, service_center=NULL,'
+        f' date={int(time.time() * 1000)}'
+    )
+    self.mock_issue_generic_request.side_effect = [
+        mock_response_sms,
+        mock_response_time,
+    ]
+
+    env = mock.MagicMock()
+    env.get_state.return_value.ui_elements = [
+        representation_utils.UIElement(text='Sending...')
+    ]
+    params = {'number': '1234567890', 'message': 'Hello World'}
+    task = sms_validators.SimpleSMSSendSms(params)
+    task.initialized = True
+    task._initial_sent_messages = ()
+
+    self.assertEqual(task.is_successful(env), 1)
+    env.get_state.assert_not_called()
+
+  def test_is_successful_rechecks_sent_messages_when_ui_is_sending(self):
+    mock_response_time = self._adb_response(str(int(time.time())))
+    mock_response_no_sms = self._adb_response(b'No result found.')
+    mock_response_sms = self._adb_response(
+        'Row: 0, address=1234567890, body=Hello World, service_center=NULL,'
+        f' date={int(time.time() * 1000)}'
+    )
+    self.mock_issue_generic_request.side_effect = [
+        mock_response_no_sms,
+        mock_response_sms,
+        mock_response_time,
+    ]
+
+    env = mock.MagicMock()
+    env.get_state.return_value.ui_elements = [
+        representation_utils.UIElement(text='Sending...')
+    ]
+    params = {'number': '1234567890', 'message': 'Hello World'}
+    task = sms_validators.SimpleSMSSendSms(params)
+    task.initialized = True
+    task._initial_sent_messages = ()
+
+    self.assertEqual(task.is_successful(env), 1)
+    env.get_state.assert_called_once()
+
+  def test_is_successful_raises_when_ui_is_sending_without_sent_message(self):
+    mock_response_time = self._adb_response(str(int(time.time())))
+    mock_response_no_sms = self._adb_response(b'No result found.')
+    self.mock_issue_generic_request.side_effect = [
+        mock_response_no_sms,
+        mock_response_no_sms,
+        mock_response_no_sms,
+        mock_response_no_sms,
+        mock_response_time,
+    ]
+
+    env = mock.MagicMock()
+    env.get_state.return_value.ui_elements = [
+        representation_utils.UIElement(text='Sending...')
+    ]
+    params = {'number': '1234567890', 'message': 'Hello World'}
+    task = sms_validators.SimpleSMSSendSms(params)
+    task.initialized = True
+    task._initial_sent_messages = ()
+
+    with self.assertRaisesRegex(
+        ValueError, 'Message could not be sent due to Android/emulator issue'
+    ):
+      task.is_successful(env)
 
   def test_initialize_task_message_already_sent(self):
     # From shell date +%s
