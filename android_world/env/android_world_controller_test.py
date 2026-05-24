@@ -133,6 +133,36 @@ class AndroidWorldControllerTest(absltest.TestCase):
   @mock.patch.object(adb_utils, 'check_airplane_mode')
   @mock.patch.object(android_world_controller, 'get_controller')
   @mock.patch.object(android_world_controller, '_has_wrapper')
+  @mock.patch.object(representation_utils, 'forest_to_ui_elements')
+  def test_process_timestep_continues_without_a11y_tree(
+      self,
+      mock_forest_to_ui,
+      mock_has_wrapper,
+      mock_get_controller,
+      mock_check_airplane_mode,
+  ):
+    del mock_has_wrapper, mock_get_controller, mock_check_airplane_mode
+    mock_base_env = mock.Mock(spec=env_interface.AndroidEnvInterface)
+    env = android_world_controller.AndroidWorldController(mock_base_env)
+    timestep = dm_env.TimeStep(
+        observation={}, reward=None, discount=None, step_type=None
+    )
+
+    with mock.patch.object(
+        env, 'get_a11y_forest', side_effect=RuntimeError('a11y unavailable')
+    ), mock.patch.object(
+        env, '_get_uiautomator_ui_elements', return_value=['fallback']
+    ) as mock_uiautomator_fallback:
+      processed_timestep = env._process_timestep(timestep)
+
+    self.assertIsNone(processed_timestep.observation['forest'])
+    self.assertEqual(processed_timestep.observation['ui_elements'], ['fallback'])
+    mock_uiautomator_fallback.assert_called_once()
+    mock_forest_to_ui.assert_not_called()
+
+  @mock.patch.object(adb_utils, 'check_airplane_mode')
+  @mock.patch.object(android_world_controller, 'get_controller')
+  @mock.patch.object(android_world_controller, '_has_wrapper')
   @mock.patch.object(
       android_world_controller.AndroidWorldController, 'refresh_env'
   )

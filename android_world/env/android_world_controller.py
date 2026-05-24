@@ -42,6 +42,14 @@ _adb_reconnect_lock = threading.Lock()
 # Throttle check_airplane_mode: at most once per interval to reduce ADB load
 _last_airplane_check: dict[int, float] = {}
 _AIRPLANE_CHECK_INTERVAL = 30.0
+_A11Y_FORWARDER_SERVICE = (
+    'com.google.androidenv.accessibilityforwarder/'
+    'com.google.androidenv.accessibilityforwarder.AccessibilityForwarder'
+)
+_A11Y_FORWARDER_FLAGS_RECEIVER = (
+    'com.google.androidenv.accessibilityforwarder/'
+    'com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver'
+)
 
 
 def _has_wrapper(
@@ -109,7 +117,7 @@ def get_a11y_tree(
     try:
       forest = env.accumulate_new_extras()['accessibility_tree'][-1]  # pytype:disable=attribute-error
       return forest
-    except KeyError:
+    except (KeyError, IndexError):
       logging.warning('Could not get a11y tree, retrying.')
     time.sleep(sleep_duration)
 
@@ -454,17 +462,33 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
       server_port = str(self._adb_server_port)
       device_args = ['-s', self._device_name] if self._device_name else []
 
-      # Step 1: Re-enable the accessibility service
-      cmd = [adb_path, '-P', server_port] + device_args + [
-          'shell', 'settings', 'put', 'secure',
-          'enabled_accessibility_services',
-          'com.google.androidenv.accessibilityforwarder/'
-          'com.google.androidenv.accessibilityforwarder.AccessibilityForwarder',
-      ]
-      result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-      if result.returncode != 0:
-        logging.warning('Failed to re-enable a11y service: %s', result.stderr)
+      if self._is_remote and not self.ensure_adb_connection():
         return False
+
+      def run_shell_command(args: list[str]) -> subprocess.CompletedProcess:
+        cmd = [adb_path, '-P', server_port] + device_args + ['shell'] + args
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+      # Step 1: Re-enable Android accessibility and the forwarder service.
+      # Some failures leave the service listed but global accessibility off.
+      for shell_args in (
+          ['settings', 'put', 'secure', 'accessibility_enabled', '1'],
+          [
+              'settings',
+              'put',
+              'secure',
+              'enabled_accessibility_services',
+              _A11Y_FORWARDER_SERVICE,
+          ],
+      ):
+        result = run_shell_command(shell_args)
+        if result.returncode != 0:
+          logging.warning(
+              'Failed to update a11y setting %s: %s',
+              ' '.join(shell_args),
+              result.stderr,
+          )
+          return False
 
       logging.info('Re-enabled AccessibilityForwarder service')
       time.sleep(2.0)  # Give the service time to start
@@ -480,8 +504,7 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
             'shell', 'am', 'broadcast',
             '-a', 'accessibility_forwarder.intent.action.SET_GRPC',
             '--ei', 'port', str(self._a11y_port),
-            '-n', 'com.google.androidenv.accessibilityforwarder/'
-                  'com.google.androidenv.accessibilityforwarder.FlagsBroadcastReceiver',
+            '-n', _A11Y_FORWARDER_FLAGS_RECEIVER,
         ]
         subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
@@ -501,6 +524,8 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
       2. Restart AccessibilityForwarder service (handles uiautomator disruption)
       3. Full environment refresh (handles ADB disconnection / deep failures)
     """
+    self.ensure_adb_connection()
+
     try:
       return self._get_a11y_forest()
     except RuntimeError:
@@ -535,25 +560,51 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
     self.ensure_adb_connection()
 
     if self._a11y_method == A11yMethod.A11Y_FORWARDER_APP:
-      return representation_utils.forest_to_ui_elements(
-          self.get_a11y_forest(),
-          exclude_invisible_elements=True,
-      )
+      try:
+        return representation_utils.forest_to_ui_elements(
+            self.get_a11y_forest(),
+            exclude_invisible_elements=True,
+        )
+      except RuntimeError as e:
+        logging.warning(
+            'A11y tree unavailable after recovery; falling back to '
+            'uiautomator UI elements: %s',
+            e,
+        )
+        return self._get_uiautomator_ui_elements()
     elif self._a11y_method == A11yMethod.UIAUTOMATOR:
+      return self._get_uiautomator_ui_elements()
+    else:
+      return []
+
+  def _get_uiautomator_ui_elements(self) -> list[representation_utils.UIElement]:
+    """Returns UI elements from uiautomator, or an empty list if it fails."""
+    try:
       return representation_utils.xml_dump_to_ui_elements(
           adb_utils.uiautomator_dump(self._env)
       )
-    else:
+    except Exception as e:
+      logging.warning('Failed to get UI elements via uiautomator: %s', e)
       return []
 
   def _process_timestep(self, timestep: dm_env.TimeStep) -> dm_env.TimeStep:
     """Adds a11y tree info to the observation."""
     if self._a11y_method == A11yMethod.A11Y_FORWARDER_APP:
-      forest = self.get_a11y_forest()
-      ui_elements = representation_utils.forest_to_ui_elements(
-          forest,
-          exclude_invisible_elements=True,
-      )
+      try:
+        forest = self.get_a11y_forest()
+      except RuntimeError as e:
+        logging.warning(
+            'A11y tree unavailable after recovery; falling back to '
+            'uiautomator UI elements: %s',
+            e,
+        )
+        forest = None
+        ui_elements = self._get_uiautomator_ui_elements()
+      else:
+        ui_elements = representation_utils.forest_to_ui_elements(
+            forest,
+            exclude_invisible_elements=True,
+        )
     else:
       forest = None
       ui_elements = self.get_ui_elements()

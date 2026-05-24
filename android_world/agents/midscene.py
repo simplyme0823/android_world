@@ -3,6 +3,7 @@
 
 
 from android_world.agents import base_agent
+from android_world.env import adb_utils
 from android_world.env import interface
 from android_world.env import representation_utils
 
@@ -160,21 +161,32 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
         self.end_headers()
         self.wfile.write(body.encode('utf-8'))
 
+      def _page_xml_from_adb_dump(self) -> str:
+        try:
+          page_xml = adb_utils.uiautomator_dump(agent_ref.env.controller)
+          if page_xml:
+            return page_xml
+        except Exception as e:
+          agent_ref._formatted_console(
+              'DOM provider adb dump fallback failed: ' + str(e)
+          )
+        return ''
+
       def _page_xml_from_state(self, state) -> str:
         if state.forest is None:
           agent_ref._formatted_console(
-              'DOM provider got empty AccessibilityForwarder forest; no page XML returned'
+              'DOM provider got empty AccessibilityForwarder forest; falling back to adb dump'
           )
-          return ''
+          return self._page_xml_from_adb_dump()
 
         page_xml = representation_utils.forest_to_raw_xml(state.forest)
         if page_xml:
           return page_xml
 
         agent_ref._formatted_console(
-            'DOM provider got empty AccessibilityForwarder XML; no page XML returned'
+            'DOM provider got empty AccessibilityForwarder XML; falling back to adb dump'
         )
-        return ''
+        return self._page_xml_from_adb_dump()
 
       def _get_state_with_retry(self):
         state = agent_ref.env.get_state()
