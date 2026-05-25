@@ -229,18 +229,21 @@ class TestMarkorCreateNoteFromClipboard(test_utils.AdbEvalTestBase):
 
 class TestMarkorMergeNotes(test_utils.AdbEvalTestBase):
 
-  def test_initialized_correctly(self):
-    async_env = mock.create_autospec(interface.AsyncEnv)
-
-    task = markor.MarkorMergeNotes({
+  def _make_task(self):
+    return markor.MarkorMergeNotes({
         'file1_name': 'file1',
         'file2_name': 'file2',
         'file3_name': 'file3',
         'new_file_name': 'new_file_name',
-        'file1_content': 'file1 content.\n',
-        'file2_content': 'file2 content.\n',
-        'file3_content': 'file3 content.\n',
+        'file1_content': 'file1 content.',
+        'file2_content': 'file2 content.',
+        'file3_content': 'file3 content.',
     })
+
+  def test_initialized_correctly(self):
+    async_env = mock.create_autospec(interface.AsyncEnv)
+
+    task = self._make_task()
     self.mock_check_file_or_folder_exists.return_value = False
     task.initialize_task(async_env)
     self.assertIsNotNone(task.create_file_task)
@@ -267,25 +270,32 @@ class TestMarkorMergeNotes(test_utils.AdbEvalTestBase):
   ):
     env = mock.create_autospec(interface.AsyncEnv)
 
-    task = markor.MarkorMergeNotes({
-        'file1_name': 'file1',
-        'file2_name': 'file2',
-        'file3_name': 'file3',
-        'new_file_name': 'new_file_name',
-        'file1_content': 'file1 content.\n',
-        'file2_content': 'file2 content.\n',
-        'file3_content': 'file3 content.\n',
-    })
+    task = self._make_task()
 
     self.mock_check_file_or_folder_exists.return_value = True
     merged_content = adb_pb2.AdbResponse()
     merged_content.generic.output = (
         b'file1 content.\n\nfile2 content.\n\nfile3 content.\n'
     )
-    self.mock_issue_generic_request.side_effect = [
-        merged_content,
-        merged_content,
-    ]
+    self.mock_issue_generic_request.return_value = merged_content
+
+    self.assertEqual(test_utils.perform_task(task, env), 1)
+
+  @mock.patch.object(user_data_generation, 'clear_device_storage')
+  @mock.patch.object(file_utils, 'clear_directory')
+  def test_is_successful_with_single_newlines(
+      self, unused_mock_clear_directory, unused_mock_clear_device_storage
+  ):
+    env = mock.create_autospec(interface.AsyncEnv)
+
+    task = self._make_task()
+
+    self.mock_check_file_or_folder_exists.return_value = True
+    merged_content = adb_pb2.AdbResponse()
+    merged_content.generic.output = (
+        b'file1 content.\nfile2 content.\nfile3 content.\n'
+    )
+    self.mock_issue_generic_request.return_value = merged_content
 
     self.assertEqual(test_utils.perform_task(task, env), 1)
 

@@ -641,25 +641,27 @@ class MarkorMergeNotes(Markor):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
-    create_success = self.create_file_task.is_successful(env)
-    if not create_success:
+    new_file_name = self.params["new_file_name"]
+    new_file_exists = file_utils.check_file_or_folder_exists(
+        new_file_name, device_constants.MARKOR_DATA, env.controller
+    )
+    if not new_file_exists:
       # Collect validation logs
       self.add_validation_log('MarkorMergeNotes Evaluation Details:')
-      self.add_validation_log(f'  - Create file task failed, target file: {self.params["new_file_name"]}')
+      self.add_validation_log(
+          f'  - Create file task failed, target file: {new_file_name}'
+      )
       self.add_validation_log(f'  - Validation result: False')
       return 0.0
-    # The CreateFile task is using a fuzzy match in its is_successful function,
-    # but here we want to explicitly check if the agent adds a blank line
-    # between the notes. The following check only works based on the current way
-    # we generate notes with the assumption that each file's content is a string
-    # of length less than 20, consisting of letters and digits, ended with a \n.
+    # The task asks for a new line between notes. Accept either one newline or
+    # one blank line between adjacent note contents.
     merged_file = (
         adb_utils.issue_generic_request(
             [
                 "shell",
                 "cat",
                 file_utils.convert_to_posix_path(
-                    device_constants.MARKOR_DATA, self.params["new_file_name"]
+                    device_constants.MARKOR_DATA, new_file_name
                 ),
             ],
             env.controller,
@@ -669,27 +671,24 @@ class MarkorMergeNotes(Markor):
         .strip()
     )
 
-    # merged_file should look like,
-    # file1\n\nfile2\n\nfile3, where the first and third \n are inserted by
-    # create_file in file_utils, the second and the forth \n should be inserted
-    # by agent.
-    content_split = merged_file.split("\n")
-    are_notes_merged = (
-        len(content_split) == 5
-        and (not content_split[1])
-        and (not content_split[3])
-    )
-
-    expected_content = (
-        self.params["file1_content"] + "\n\n" +
-        self.params["file2_content"] + "\n\n" +
-        self.params["file3_content"]
-    )
+    expected_contents = [
+        "\n".join([
+            self.params["file1_content"],
+            self.params["file2_content"],
+            self.params["file3_content"],
+        ]),
+        "\n\n".join([
+            self.params["file1_content"],
+            self.params["file2_content"],
+            self.params["file3_content"],
+        ]),
+    ]
+    are_notes_merged = merged_file in expected_contents
 
     # Collect validation logs
     self.add_validation_log('MarkorMergeNotes Evaluation Details:')
     self.add_validation_log(f'  - Notes properly merged: {are_notes_merged}')
-    self.add_validation_log(f'  - Expected: {repr(expected_content)}')
+    self.add_validation_log(f'  - Expected one of: {repr(expected_contents)}')
     self.add_validation_log(f'  - Actual:   {repr(merged_file)}')
     self.add_validation_log(f'  - Validation result: {are_notes_merged}')
 
