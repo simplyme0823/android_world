@@ -15,6 +15,7 @@
 """Base class for task evaluations interacting with SQLite-based Android apps."""
 
 import abc
+from collections.abc import Callable
 import dataclasses
 from typing import Any
 from typing import Optional
@@ -25,6 +26,9 @@ from android_world.task_evals import task_eval
 from android_world.task_evals.utils import sqlite_schema_utils
 from android_world.task_evals.utils import sqlite_utils
 from android_world.utils import fuzzy_match_lib
+
+
+FieldComparator = Callable[[Any, Any], bool]
 
 
 def verify_playlist(
@@ -121,6 +125,7 @@ def validate_rows_addition_integrity(
     reference_rows: list[sqlite_schema_utils.RowType],
     compare_fields: list[str],
     free_form_fields: list[str] | None = None,
+    field_comparators: dict[str, FieldComparator] | None = None,
 ) -> bool:
   """Validates that specific rows have been added correctly without side effects.
 
@@ -136,6 +141,8 @@ def validate_rows_addition_integrity(
     compare_fields: Which fields to use for comparison for each row.
     free_form_fields: Free-form, text fields where fuzzy matching will be used
       for comparison.
+    field_comparators: Optional per-field comparison functions. When provided,
+      these take precedence over free-form and exact matching for that field.
 
   Returns:
       bool: True if the rows were added correctly and other rows remained
@@ -145,6 +152,8 @@ def validate_rows_addition_integrity(
     raise ValueError("compare_fields must not be empty.")
   if not free_form_fields:
     free_form_fields = []
+  if not field_comparators:
+    field_comparators = {}
 
   def db_row_matches_reference(
       reference_row: sqlite_schema_utils.RowType,
@@ -154,7 +163,10 @@ def validate_rows_addition_integrity(
       reference_value = getattr(reference_row, field)
       candidate_value = getattr(row, field)
       # Fuzzy match for text fields.
-      if field in free_form_fields:
+      if field in field_comparators:
+        if not field_comparators[field](reference_value, candidate_value):
+          return False
+      elif field in free_form_fields:
         if not fuzzy_match_lib.fuzzy_match(reference_value, candidate_value):
           return False
       else:

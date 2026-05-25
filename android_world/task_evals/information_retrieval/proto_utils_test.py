@@ -1084,6 +1084,28 @@ class ProtoUtilsTest(parameterized.TestCase):
         proto_utils.check_agent_answer(agent_answer, task)
       self.assertEqual(exception.exception.args, expected.args)
 
+  def test_check_agent_answer_accepts_recipe_quantity_with_optional_unit(self):
+    task = task_pb2.Task(
+        name='NotesRecipeIngredientCount',
+        prompt='Test recipe ingredient quantity',
+        success_criteria=task_pb2.SuccessCriteria(
+            expectations=[
+                task_pb2.Expectation(
+                    expected_value='2 tablespoons',
+                    match_type=task_pb2.Expectation.MatchType.STRING_MATCH,
+                ),
+            ]
+        ),
+    )
+
+    self.assertTrue(proto_utils.check_agent_answer('2 tablespoons', task))
+    self.assertTrue(proto_utils.check_agent_answer('2', task))
+    self.assertFalse(proto_utils.check_agent_answer('3', task))
+    self.assertFalse(proto_utils.check_agent_answer('2 cups', task))
+    self.assertFalse(
+        proto_utils.check_agent_answer('2 tablespoons almond flour', task)
+    )
+
 
 if __name__ == '__main__':
   absltest.main()
