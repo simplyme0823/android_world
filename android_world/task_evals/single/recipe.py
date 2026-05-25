@@ -16,6 +16,7 @@
 
 import dataclasses
 import random
+import re
 from typing import Any
 from android_world.env import device_constants
 from android_world.env import interface
@@ -23,12 +24,69 @@ from android_world.task_evals.common_validators import sqlite_validators
 from android_world.task_evals.utils import sqlite_schema_utils
 from android_world.task_evals.utils import user_data_generation
 from android_world.utils import file_utils
+from android_world.utils import fuzzy_match_lib
 
 
 _DB_PATH = '/data/data/com.flauschcode.broccoli/databases/broccoli'
 _TABLE_NAME = 'recipes'
 _APP_NAME = 'broccoli app'
 _DB_KEY = 'recipeId'
+
+_RECIPE_OPTIONAL_UNIT_CANONICAL = {
+    'serving': 'serving',
+    'servings': 'serving',
+    'min': 'minute',
+    'mins': 'minute',
+    'minute': 'minute',
+    'minutes': 'minute',
+    'hr': 'hour',
+    'hrs': 'hour',
+    'hour': 'hour',
+    'hours': 'hour',
+}
+_OPTIONAL_UNIT_RE = re.compile(
+    r'^\s*(?P<amount>(?:\d+\s+)?\d+(?:/\d+)?(?:\.\d+)?'
+    r'(?:\s*[-–]\s*\d+(?:/\d+)?(?:\.\d+)?)?)'
+    r'(?:\s*(?P<unit>[A-Za-z]+))?\s*$'
+)
+
+
+def _parse_optional_recipe_unit(value: Any) -> tuple[str, str | None] | None:
+  """Parses recipe duration/serving values where the unit may be omitted.
+
+  This is intentionally scoped to simple recipe fields like "10 mins" and
+  "2 servings"; unrelated trailing text should not be treated as a unit.
+  """
+  normalized_value = str(value).strip().lower()
+  match = _OPTIONAL_UNIT_RE.match(normalized_value)
+  if not match:
+    return None
+
+  amount = re.sub(r'\s*[-–]\s*', '-', match.group('amount'))
+  unit = match.group('unit')
+  if unit is None:
+    return amount, None
+  canonical_unit = _RECIPE_OPTIONAL_UNIT_CANONICAL.get(unit)
+  if canonical_unit is None:
+    return None
+  return amount, canonical_unit
+
+
+def _optional_recipe_unit_matches(
+    reference_value: Any, candidate_value: Any
+) -> bool:
+  parsed_reference = _parse_optional_recipe_unit(reference_value)
+  parsed_candidate = _parse_optional_recipe_unit(candidate_value)
+  if parsed_reference is not None and parsed_candidate is not None:
+    reference_amount, reference_unit = parsed_reference
+    candidate_amount, candidate_unit = parsed_candidate
+    return reference_amount == candidate_amount and (
+        reference_unit is None
+        or candidate_unit is None
+        or reference_unit == candidate_unit
+    )
+  return fuzzy_match_lib.fuzzy_match(reference_value, candidate_value)
+
 
 # How to represent recipes in text form (csv or block of text) for generated
 # files.
@@ -381,6 +439,10 @@ class _RecipeAddMultipleRecipes(sqlite_validators.AddMultipleRows, _RecipeApp):
             'ingredients',
             'directions',
         ],
+        field_comparators={
+            'servings': _optional_recipe_unit_matches,
+            'preparationTime': _optional_recipe_unit_matches,
+        },
     )
 
   @classmethod

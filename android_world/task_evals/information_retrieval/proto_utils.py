@@ -49,6 +49,49 @@ FieldMessage = TypeVar(
     task_pb2.ExclusionCondition,
 )
 
+_NOTES_RECIPE_INGREDIENT_COUNT_TASK = 'NotesRecipeIngredientCount'
+_RECIPE_UNIT_CANONICAL = {
+    'cup': 'cup',
+    'cups': 'cup',
+    'tablespoon': 'tablespoon',
+    'tablespoons': 'tablespoon',
+    'teaspoon': 'teaspoon',
+    'teaspoons': 'teaspoon',
+}
+_OPTIONAL_UNIT_RE = re.compile(
+    r'^\s*(?P<amount>(?:\d+\s+)?\d+(?:/\d+)?(?:\.\d+)?)'
+    r'(?:\s*(?P<unit>[A-Za-z]+))?\s*$'
+)
+
+
+def _parse_optional_recipe_unit(value: str) -> tuple[str, str | None] | None:
+  normalized_value = str(value).strip().lower()
+  match = _OPTIONAL_UNIT_RE.match(normalized_value)
+  if not match:
+    return None
+  unit = match.group('unit')
+  if unit is None:
+    return match.group('amount'), None
+  canonical_unit = _RECIPE_UNIT_CANONICAL.get(unit)
+  if canonical_unit is None:
+    return None
+  return match.group('amount'), canonical_unit
+
+
+def _recipe_quantity_matches(answer: str, expected: str) -> bool:
+  parsed_answer = _parse_optional_recipe_unit(answer)
+  parsed_expected = _parse_optional_recipe_unit(expected)
+  if parsed_answer is not None and parsed_expected is not None:
+    answer_amount, answer_unit = parsed_answer
+    expected_amount, expected_unit = parsed_expected
+    return answer_amount == expected_amount and (
+        answer_unit is None
+        or expected_unit is None
+        or answer_unit == expected_unit
+    )
+  return fuzzy_match_lib.fuzzy_match(answer, expected)
+
+
 _STRICT_AFTER_CALENDAR_FIRST_EVENT_TASK = (
     'SimpleCalendarFirstEventAfterStartTime'
 )
@@ -168,7 +211,10 @@ def check_agent_answer(agent_answer: str, task: task_pb2.Task) -> bool:
   expected_answers = get_expected_answer(task)
   comparator = lambda x, y: x == y
   if task_pb2.Expectation.MatchType.STRING_MATCH in match_types:
-    comparator = fuzzy_match_lib.fuzzy_match
+    if task.name == _NOTES_RECIPE_INGREDIENT_COUNT_TASK:
+      comparator = _recipe_quantity_matches
+    else:
+      comparator = fuzzy_match_lib.fuzzy_match
   elif (
       task_pb2.Expectation.MatchType.NUMBER_MATCH in match_types
       and task.success_criteria.expectations[0].HasField('tolerance')

@@ -430,6 +430,84 @@ class TestRecipeAddMultipleRecipes(absltest.TestCase):
     self.assertEqual(params[sqlite_validators.NOISE_ROW_OBJECTS], noise_rows)
     self.assertEqual(params[recipe._TEXT_REPRESENTATION_TYPE], 'text_block')
 
+  def test_validate_addition_accepts_optional_recipe_units(self):
+    instance = AddMultipleRecipesForTest({})
+    reference_rows = [
+        sqlite_schema_utils.Recipe(
+            title='Recipe 1',
+            servings='2 servings',
+            preparationTime='10 mins',
+        )
+    ]
+    after = [
+        sqlite_schema_utils.Recipe(
+            title='Recipe 1',
+            servings='2',
+            preparationTime='10',
+        )
+    ]
+
+    self.assertTrue(
+        instance.validate_addition_integrity([], after, reference_rows)
+    )
+
+  def test_validate_addition_rejects_wrong_recipe_amount(self):
+    instance = AddMultipleRecipesForTest({})
+    reference_rows = [
+        sqlite_schema_utils.Recipe(
+            title='Recipe 1',
+            servings='2 servings',
+            preparationTime='10 mins',
+        )
+    ]
+    after = [
+        sqlite_schema_utils.Recipe(
+            title='Recipe 1',
+            servings='3',
+            preparationTime='10',
+        )
+    ]
+
+    self.assertFalse(
+        instance.validate_addition_integrity([], after, reference_rows)
+    )
+
+  def test_validate_addition_rejects_wrong_recipe_unit(self):
+    instance = AddMultipleRecipesForTest({})
+    reference_rows = [
+        sqlite_schema_utils.Recipe(
+            title='Recipe 1',
+            servings='2 servings',
+            preparationTime='10 mins',
+        )
+    ]
+    after = [
+        sqlite_schema_utils.Recipe(
+            title='Recipe 1',
+            servings='2 hrs',
+            preparationTime='10 hours',
+        )
+    ]
+
+    self.assertFalse(
+        instance.validate_addition_integrity([], after, reference_rows)
+    )
+
+  def test_validate_addition_accepts_equivalent_serving_ranges(self):
+    self.assertTrue(
+        recipe._optional_recipe_unit_matches('3-4 servings', '3 - 4')
+    )
+    self.assertTrue(
+        recipe._optional_recipe_unit_matches('3-4 servings', '3–4')
+    )
+
+  def test_validate_addition_rejects_non_unit_trailing_text(self):
+    self.assertFalse(
+        recipe._optional_recipe_unit_matches(
+            '2 servings', '2 servings extra'
+        )
+    )
+
 
 class RecipeAddMultipleRecipesFromMarkor2ForTest(
     recipe.RecipeAddMultipleRecipesFromMarkor2
