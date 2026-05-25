@@ -664,8 +664,38 @@ class OsmAndApp(AppSetup):
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
+
+    # Copy maps before the first OsmAnd launch so the app can discover them
+    # during its startup scan instead of relying on a later lazy rescan.
+    file_utils.mkdir(cls.DEVICE_MAPS_PATH, env.controller)
+    cls._copy_data_to_device(cls.MAP_NAMES, cls.DEVICE_MAPS_PATH, env)
+
+    # Make sure security context is correct so that the files can be accessed.
+    for map_file in cls.MAP_NAMES:
+      adb_utils.check_ok(
+          adb_utils.issue_generic_request(
+              [
+                  "shell",
+                  "chcon",
+                  "u:object_r:media_rw_data_file:s0",
+                  file_utils.convert_to_posix_path(
+                      cls.DEVICE_MAPS_PATH, map_file
+                  ),
+              ],
+              env.controller,
+          )
+      )
+
+    # Grant permissions for OsmAnd mapping app.
+    package = adb_utils.extract_package_name(
+        adb_utils.get_adb_activity(cls.app_name)
+    )
+    for permission in cls.PERMISSIONS:
+      adb_utils.grant_permissions(package, permission, env.controller)
+
     # Use start_activity directly with explicit timeout — OsmAnd cold start
-    # after pm clear needs time to initialize and extract the basemap.
+    # after pm clear needs time to initialize, discover copied maps, and extract
+    # the basemap.
     activity = adb_utils.get_adb_activity(cls.app_name)
     adb_utils.start_activity(
         activity, extra_args=[], env=env.controller, timeout_sec=30
@@ -694,34 +724,6 @@ class OsmAndApp(AppSetup):
             "Map search may be degraded."
         )
       adb_utils.close_app(cls.app_name, env.controller)
-
-    # Grant permissions for OsmAnd mapping app.
-    package = adb_utils.extract_package_name(
-        adb_utils.get_adb_activity(cls.app_name)
-    )
-    for permission in cls.PERMISSIONS:
-      adb_utils.grant_permissions(package, permission, env.controller)
-
-    # Copy maps to data directory.
-    cls._copy_data_to_device(cls.MAP_NAMES, cls.DEVICE_MAPS_PATH, env)
-
-    # Make sure security context is correct so that the files can be accessed.
-    for map_file in cls.MAP_NAMES:
-      adb_utils.check_ok(
-          adb_utils.issue_generic_request(
-              [
-                  "shell",
-                  "chcon",
-                  "u:object_r:media_rw_data_file:s0",
-                  file_utils.convert_to_posix_path(
-                      cls.DEVICE_MAPS_PATH, map_file
-                  ),
-              ],
-              env.controller,
-          )
-      )
-
-    adb_utils.close_app(cls.app_name, env.controller)
 
 
 class OpenTracksApp(AppSetup):
