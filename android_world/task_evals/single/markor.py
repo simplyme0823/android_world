@@ -642,14 +642,24 @@ class MarkorMergeNotes(Markor):
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
     new_file_name = self.params["new_file_name"]
-    new_file_exists = file_utils.check_file_or_folder_exists(
-        new_file_name, device_constants.MARKOR_DATA, env.controller
-    )
-    if not new_file_exists:
+    candidate_file_names = [new_file_name]
+    if "." not in new_file_name.rsplit("/", maxsplit=1)[-1]:
+      candidate_file_names.append(f"{new_file_name}.md")
+    actual_file_name = None
+    for candidate_file_name in candidate_file_names:
+      if file_utils.check_file_or_folder_exists(
+          candidate_file_name, device_constants.MARKOR_DATA, env.controller
+      ):
+        actual_file_name = candidate_file_name
+        break
+    if actual_file_name is None:
       # Collect validation logs
       self.add_validation_log('MarkorMergeNotes Evaluation Details:')
       self.add_validation_log(
           f'  - Create file task failed, target file: {new_file_name}'
+      )
+      self.add_validation_log(
+          f'  - Candidate file names: {repr(candidate_file_names)}'
       )
       self.add_validation_log(f'  - Validation result: False')
       return 0.0
@@ -661,7 +671,7 @@ class MarkorMergeNotes(Markor):
                 "shell",
                 "cat",
                 file_utils.convert_to_posix_path(
-                    device_constants.MARKOR_DATA, new_file_name
+                    device_constants.MARKOR_DATA, actual_file_name
                 ),
             ],
             env.controller,
@@ -687,6 +697,7 @@ class MarkorMergeNotes(Markor):
 
     # Collect validation logs
     self.add_validation_log('MarkorMergeNotes Evaluation Details:')
+    self.add_validation_log(f'  - Actual file name: {actual_file_name}')
     self.add_validation_log(f'  - Notes properly merged: {are_notes_merged}')
     self.add_validation_log(f'  - Expected one of: {repr(expected_contents)}')
     self.add_validation_log(f'  - Actual:   {repr(merged_file)}')

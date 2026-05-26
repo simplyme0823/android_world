@@ -299,6 +299,26 @@ class TestMarkorMergeNotes(test_utils.AdbEvalTestBase):
 
     self.assertEqual(test_utils.perform_task(task, env), 1)
 
+  @mock.patch.object(user_data_generation, 'clear_device_storage')
+  @mock.patch.object(file_utils, 'clear_directory')
+  def test_is_successful_with_default_markdown_extension(
+      self, unused_mock_clear_directory, unused_mock_clear_device_storage
+  ):
+    env = mock.create_autospec(interface.AsyncEnv)
+
+    task = self._make_task()
+
+    self.mock_check_file_or_folder_exists.side_effect = [False, True]
+    merged_content = adb_pb2.AdbResponse()
+    merged_content.generic.output = (
+        b'file1 content.\nfile2 content.\nfile3 content.\n'
+    )
+    self.mock_issue_generic_request.return_value = merged_content
+
+    self.assertEqual(test_utils.perform_task(task, env), 1)
+    adb_command = self.mock_issue_generic_request.call_args[0][0]
+    self.assertIn('new_file_name.md', adb_command[-1])
+
 
 class TestMarkorChangeNoteContent(test_utils.AdbEvalTestBase):
 
