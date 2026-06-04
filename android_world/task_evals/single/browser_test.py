@@ -14,8 +14,14 @@
 
 import ast
 import pathlib
+from unittest import mock
 
 from absl.testing import absltest
+import numpy as np
+
+from android_world.env import interface
+from android_world.env import representation_utils
+from android_world.task_evals.single import browser
 
 
 def _browser_draw_html():
@@ -40,6 +46,51 @@ def _browser_draw_success_from_final_pixels(task_colors, pixels):
     if color in color_counts:
       color_counts[color] += 1
   return all(color_counts[color] > 0 for color in task_colors)
+
+
+def _state_with_texts(*texts):
+  return interface.State(
+      pixels=np.zeros((1, 1, 3), dtype=np.uint8),
+      forest=None,
+      ui_elements=[
+          representation_utils.UIElement(text=text) for text in texts
+      ],
+  )
+
+
+class _FakeEnv:
+
+  def __init__(self, states):
+    self.controller = object()
+    self._states = list(states)
+    self.get_state_call_count = 0
+
+  def get_state(self, wait_to_stabilize: bool = False):
+    del wait_to_stabilize
+    self.get_state_call_count += 1
+    if len(self._states) > 1:
+      return self._states.pop(0)
+    return self._states[0]
+
+
+class BrowserTaskTest(absltest.TestCase):
+
+  def test_success_check_retries_stale_accessibility_tree(self):
+    env = _FakeEnv([
+        _state_with_texts('Memory Task', 'Enter the product', 'Submit'),
+        _state_with_texts('Memory Task', '20250', 'Submit', 'Success!'),
+    ])
+    task = browser.BrowserMultiply({'browser_task_seed': 1})
+
+    with mock.patch.object(
+        browser.adb_utils,
+        'get_current_activity',
+        return_value=('com.android.chrome/org.chromium.ChromeActivity', None),
+    ), mock.patch.object(browser.time, 'sleep') as mock_sleep:
+      self.assertEqual(task.is_successful(env), 1.0)
+
+    self.assertEqual(env.get_state_call_count, 2)
+    mock_sleep.assert_called_once_with(5.0)
 
 
 class BrowserDrawTest(absltest.TestCase):
