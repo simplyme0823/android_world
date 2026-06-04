@@ -32,6 +32,8 @@ class BrowserTask(task_eval.TaskEval):
 
   app_names = ['chrome']
   complexity = 2
+  success_check_attempts = 4
+  success_check_retry_interval = 5.0
   schema = {
       'type': 'object',
       'properties': {
@@ -96,25 +98,32 @@ class BrowserTask(task_eval.TaskEval):
         env.controller, datetime_utils.Toggle.OFF
     )
 
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    state = env.get_state()
-
-    package_name = adb_utils.extract_package_name(
-        adb_utils.get_current_activity(env.controller)[0]
-    )
-
-    logging.info("BrowserTask the target package_name: %s", package_name)
-
-    in_chrome = package_name == 'com.android.chrome'
-    logging.info("BrowserTask the ui_elements: %s", state.ui_elements)
-
-    success_found = False
+  def _has_success_text(self, state: interface.State) -> bool:
     for element in state.ui_elements:
       if element.text == 'Success!':
-        success_found = True
+        return True
+    return False
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    package_name = ''
+    success_found = False
+    for attempt in range(self.success_check_attempts):
+      state = env.get_state()
+      package_name = adb_utils.extract_package_name(
+          adb_utils.get_current_activity(env.controller)[0]
+      )
+
+      logging.info("BrowserTask the target package_name: %s", package_name)
+      logging.info("BrowserTask the ui_elements: %s", state.ui_elements)
+
+      success_found = self._has_success_text(state)
+      if success_found:
         break
+      if attempt < self.success_check_attempts - 1:
+        time.sleep(self.success_check_retry_interval)
 
     # Collect validation logs
+    in_chrome = package_name == 'com.android.chrome'
     self.add_validation_log('BrowserTask Evaluation Details:')
     self.add_validation_log(f'  - Current package: {package_name}')
     self.add_validation_log(f'  - In Chrome app: {in_chrome}')
