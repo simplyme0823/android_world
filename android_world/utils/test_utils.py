@@ -142,6 +142,9 @@ class AdbEvalTestBase(absltest.TestCase):
     self.mock_get_clipboard_contents = mock.patch.object(
         adb_utils, 'get_clipboard_contents'
     ).start()
+    self.mock_get_clipboard_contents_from_shell = mock.patch.object(
+        adb_utils, 'get_clipboard_contents_from_shell'
+    ).start()
     self.mock_set_clipboard_contents = mock.patch.object(
         adb_utils, 'set_clipboard_contents'
     ).start()

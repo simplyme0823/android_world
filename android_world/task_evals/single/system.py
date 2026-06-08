@@ -355,15 +355,37 @@ class SystemCopyToClipboard(task_eval.TaskEval):
     match = fuzzy_match_lib.fuzzy_match(
         self.clipboard_content, actual_clipboard_content
     )
+    fallback_clipboard_content = None
+    fallback_match = False
+    fallback_error = None
+    if not match:
+      try:
+        fallback_clipboard_content = (
+            adb_utils.get_clipboard_contents_from_shell(env.controller)
+        )
+        fallback_match = fuzzy_match_lib.fuzzy_match(
+            self.clipboard_content, fallback_clipboard_content
+        )
+      except RuntimeError as error:
+        fallback_error = str(error)
+
+    success = match or fallback_match
 
     # Collect validation logs
     self.add_validation_log('SystemCopyToClipboard Evaluation Details:')
     self.add_validation_log(f'  - Expected content: {self.clipboard_content}')
     self.add_validation_log(f'  - Actual content: {actual_clipboard_content}')
     self.add_validation_log(f'  - Content match: {match}')
-    self.add_validation_log(f'  - Validation result: {match}')
+    if fallback_clipboard_content is not None:
+      self.add_validation_log(
+          f'  - Fallback actual content: {fallback_clipboard_content}'
+      )
+      self.add_validation_log(f'  - Fallback content match: {fallback_match}')
+    if fallback_error is not None:
+      self.add_validation_log(f'  - Fallback error: {fallback_error}')
+    self.add_validation_log(f'  - Validation result: {success}')
 
-    return 1.0 if match else 0.0
+    return 1.0 if success else 0.0
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     super().tear_down(env)

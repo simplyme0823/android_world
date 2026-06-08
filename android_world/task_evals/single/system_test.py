@@ -173,6 +173,9 @@ class TestSystemCopyToClipboard(test_utils.AdbEvalTestBase):
     self.assertEqual(test_utils.perform_task(task, env), 1)
     self.assertEqual(self.mock_set_clipboard_contents.call_count, 2)
     self.assertEqual(self.mock_get_clipboard_contents.call_count, 1)
+    self.assertEqual(
+        self.mock_get_clipboard_contents_from_shell.call_count, 0
+    )
 
   def test_is_successful_fuzzy_match(self):
     # Setup
@@ -188,10 +191,37 @@ class TestSystemCopyToClipboard(test_utils.AdbEvalTestBase):
     self.assertEqual(test_utils.perform_task(task, env), 1)
     self.assertEqual(self.mock_set_clipboard_contents.call_count, 2)
     self.assertEqual(self.mock_get_clipboard_contents.call_count, 1)
+    self.assertEqual(
+        self.mock_get_clipboard_contents_from_shell.call_count, 0
+    )
+
+  def test_is_successful_with_shell_clipboard_fallback(self):
+    # Setup
+    self.mock_get_clipboard_contents.return_value = (
+        '5678 Oak St, Springfield, IL'
+    )
+    self.mock_get_clipboard_contents_from_shell.return_value = (
+        '1234 Elm St, Springfield, IL'
+    )
+
+    env = mock.MagicMock()
+    params = {'clipboard_content': '1234 Elm St, Springfield, IL'}
+
+    # Instantiate task and check fallback success
+    task = system.SystemCopyToClipboard(params)
+    self.assertEqual(test_utils.perform_task(task, env), 1)
+    self.assertEqual(self.mock_set_clipboard_contents.call_count, 2)
+    self.assertEqual(self.mock_get_clipboard_contents.call_count, 1)
+    self.assertEqual(
+        self.mock_get_clipboard_contents_from_shell.call_count, 1
+    )
 
   def test_is_not_successful(self):
     # Setup
     self.mock_get_clipboard_contents.return_value = (
+        '5678 Oak St, Springfield, IL'
+    )
+    self.mock_get_clipboard_contents_from_shell.return_value = (
         '5678 Oak St, Springfield, IL'
     )
 
@@ -205,6 +235,9 @@ class TestSystemCopyToClipboard(test_utils.AdbEvalTestBase):
     task.tear_down(env)
     self.assertEqual(self.mock_set_clipboard_contents.call_count, 2)
     self.assertEqual(self.mock_get_clipboard_contents.call_count, 1)
+    self.assertEqual(
+        self.mock_get_clipboard_contents_from_shell.call_count, 1
+    )
 
   def test_initialized_called_twice(self):
     # Setup
@@ -220,6 +253,25 @@ class TestSystemCopyToClipboard(test_utils.AdbEvalTestBase):
     task.initialize_task(env)
     with self.assertRaisesRegex(RuntimeError, 'already called.'):
       task.initialize_task(env)
+
+
+class ClipboardAdbUtilsTest(absltest.TestCase):
+
+  @mock.patch.object(adb_utils, 'issue_generic_request')
+  def test_get_clipboard_contents_from_shell(self, mock_issue_generic_request):
+    mock_issue_generic_request.return_value = (
+        fake_adb_responses.create_successful_generic_response(
+            '1234 Elm St, Springfield, IL\n'
+        )
+    )
+    env = mock.MagicMock()
+
+    clipboard_content = adb_utils.get_clipboard_contents_from_shell(env)
+
+    self.assertEqual(clipboard_content, '1234 Elm St, Springfield, IL')
+    mock_issue_generic_request.assert_called_once_with(
+        ['shell', 'cmd', 'clipboard', 'get-text'], env
+    )
 
 
 class SystemTest(absltest.TestCase):

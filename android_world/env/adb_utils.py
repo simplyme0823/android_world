@@ -1287,6 +1287,20 @@ def get_clipboard_contents(env: env_interface.AndroidEnvInterface) -> str:
   return result
 
 
+def get_clipboard_contents_from_shell(
+    env: env_interface.AndroidEnvInterface,
+) -> str:
+  """Gets clipboard content from the Android shell clipboard command."""
+  res = issue_generic_request(
+      ['shell', 'cmd', 'clipboard', 'get-text'], env
+  )
+
+  if res.status != adb_pb2.AdbResponse.Status.OK:
+    raise RuntimeError('Failed to get clipboard content from shell.')
+
+  return res.generic.output.decode('utf-8').strip()
+
+
 def change_orientation(
     orientation: str, env: env_interface.AndroidEnvInterface
 ) -> None:
