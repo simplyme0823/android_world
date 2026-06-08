@@ -45,7 +45,7 @@ class _SystemBrightnessToggle(task_eval.TaskEval):
         env.controller,
     )
     brightness_level = int(res.generic.output.decode().strip())
-    expected_level = 255 if self.params['max_or_min'] == 'max' else 1
+    expected_level = 255 if self.params['max_or_min'] == 'max' else 0
     success = brightness_level == expected_level
 
     # Collect validation logs
@@ -57,7 +57,7 @@ class _SystemBrightnessToggle(task_eval.TaskEval):
     if self.params['max_or_min'] == 'max':
       return 1.0 if brightness_level == 255 else 0.0
     else:
-      return 1.0 if brightness_level == 1 else 0.0
+      return 1.0 if brightness_level == 0 else 0.0
 
   @classmethod
   def generate_random_params(cls) -> dict[str, Any]:

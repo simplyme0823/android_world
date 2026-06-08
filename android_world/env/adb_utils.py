@@ -1111,7 +1111,7 @@ def set_brightness(
   if max_or_min not in ('max', 'min'):
     raise ValueError('Must be one of max or min.')
 
-  brightness_level = '255' if max_or_min == 'max' else '1'
+  brightness_level = '255' if max_or_min == 'max' else '0'
 
   return issue_generic_request(
       [
