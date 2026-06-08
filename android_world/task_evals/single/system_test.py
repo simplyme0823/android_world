@@ -14,6 +14,7 @@
 
 from unittest import mock
 from absl.testing import absltest
+from android_world.env import adb_utils
 from android_world.env import interface
 from android_world.task_evals.single import system
 from android_world.utils import app_snapshot
@@ -77,6 +78,83 @@ class SystemWifiTurnOffTest(absltest.TestCase):
     )
 
     self.assertEqual(eval_task.is_successful(env), 0.0)
+
+
+class SystemBrightnessTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.env = mock.create_autospec(interface.AsyncEnv)
+
+  def _set_brightness_response(self, brightness_level: int):
+    self.mock_issue_generic_request.return_value = (
+        fake_adb_responses.create_successful_generic_response(
+            str(brightness_level)
+        )
+    )
+
+  def _assert_brightness_score(
+      self,
+      task_cls,
+      max_or_min: str,
+      brightness_level: int,
+      expected_score: float,
+  ):
+    eval_task = task_cls(params={'max_or_min': max_or_min})
+    eval_task.initialized = True
+    self._set_brightness_response(brightness_level)
+
+    self.assertEqual(eval_task.is_successful(self.env), expected_score)
+    self.mock_issue_generic_request.assert_called_with(
+        ['shell', 'settings', 'get', 'system', 'screen_brightness'],
+        self.env.controller,
+    )
+
+  @mock.patch.object(system.adb_utils, 'issue_generic_request')
+  def test_min_brightness_tasks_accept_0(self, mock_issue_generic_request):
+    self.mock_issue_generic_request = mock_issue_generic_request
+
+    for task_cls in (
+        system.SystemBrightnessMin,
+        system.SystemBrightnessMinVerify,
+    ):
+      with self.subTest(task_cls=task_cls):
+        self._assert_brightness_score(task_cls, 'min', 0, 1.0)
+
+  @mock.patch.object(system.adb_utils, 'issue_generic_request')
+  def test_min_brightness_tasks_reject_1(self, mock_issue_generic_request):
+    self.mock_issue_generic_request = mock_issue_generic_request
+
+    for task_cls in (
+        system.SystemBrightnessMin,
+        system.SystemBrightnessMinVerify,
+    ):
+      with self.subTest(task_cls=task_cls):
+        self._assert_brightness_score(task_cls, 'min', 1, 0.0)
+
+  @mock.patch.object(system.adb_utils, 'issue_generic_request')
+  def test_max_brightness_tasks_still_require_255(
+      self, mock_issue_generic_request
+  ):
+    self.mock_issue_generic_request = mock_issue_generic_request
+
+    for task_cls in (
+        system.SystemBrightnessMax,
+        system.SystemBrightnessMaxVerify,
+    ):
+      with self.subTest(task_cls=task_cls, brightness_level=255):
+        self._assert_brightness_score(task_cls, 'max', 255, 1.0)
+      with self.subTest(task_cls=task_cls, brightness_level=0):
+        self._assert_brightness_score(task_cls, 'max', 0, 0.0)
+
+  @mock.patch.object(adb_utils, 'issue_generic_request')
+  def test_set_brightness_min_writes_0(self, mock_issue_generic_request):
+    adb_utils.set_brightness('min', self.env)
+
+    mock_issue_generic_request.assert_called_once_with(
+        ['shell', 'settings', 'put', 'system', 'screen_brightness', '0'],
+        self.env,
+    )
 
 
 class TestSystemCopyToClipboard(test_utils.AdbEvalTestBase):
