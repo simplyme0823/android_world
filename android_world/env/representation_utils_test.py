@@ -28,6 +28,39 @@ class BoundsInScreen:
   bottom: int
 
 
+@dataclasses.dataclass
+class FakeNode:
+  text: str = ''
+  view_id_resource_name: str = ''
+  class_name: str = ''
+  content_description: str = ''
+  bounds_in_screen: BoundsInScreen = dataclasses.field(
+      default_factory=lambda: BoundsInScreen(1, 3, 2, 4)
+  )
+  unique_id: int = 1
+  child_ids: list[int] = dataclasses.field(default_factory=list)
+  is_clickable: bool = False
+  is_scrollable: bool = False
+  is_selected: bool = False
+  is_checked: bool = False
+  is_enabled: bool = True
+  is_focusable: bool = False
+  is_focused: bool = False
+  is_editable: bool = False
+  text_selection_start: int = 0
+  text_selection_end: int = 0
+
+
+def _fake_forest(nodes: list[FakeNode]):
+  tree = mock.MagicMock()
+  tree.nodes = nodes
+  window = mock.MagicMock()
+  window.tree = tree
+  forest = mock.MagicMock()
+  forest.windows = [window]
+  return forest
+
+
 class TestAccessibilityNodeToUIElement(parameterized.TestCase):
 
   @parameterized.named_parameters(
@@ -113,6 +146,66 @@ class TestAccessibilityNodeToUIElement(parameterized.TestCase):
           ui_element.bbox_pixels, screen_size
       )
     self.assertEqual(ui_element.bbox, expected_normalized_bbox)
+
+
+class TestForestToRawXml(absltest.TestCase):
+
+  def test_focused_editable_zero_cursor_is_embedded_on_node(self):
+    forest = _fake_forest([
+        FakeNode(
+            text='hello & bye',
+            view_id_resource_name='pkg:id/editor',
+            class_name='android.widget.EditText',
+            is_focusable=True,
+            is_focused=True,
+            is_editable=True,
+            text_selection_start=0,
+            text_selection_end=0,
+        )
+    ])
+
+    self.assertEqual(
+        representation_utils.forest_to_raw_xml(forest),
+        '<hierarchy rotation="0">\n'
+        '  <node text="hello &amp; bye" resource-id="pkg:id/editor" '
+        'class="android.widget.EditText" content-desc="" clickable="false" '
+        'scrollable="false" selected="false" checked="false" enabled="true" '
+        'focusable="true" focused="true" editable="true" bounds="[1,2][3,4]" '
+        'text-selection-start="0" text-selection-end="0" cursor-position="0" />\n'
+        '</hierarchy>',
+    )
+
+  def test_unfocused_default_selection_is_not_embedded(self):
+    forest = _fake_forest([
+        FakeNode(
+            text='hello',
+            class_name='android.widget.TextView',
+            text_selection_start=0,
+            text_selection_end=0,
+        )
+    ])
+
+    xml = representation_utils.forest_to_raw_xml(forest)
+
+    self.assertIn('bounds="[1,2][3,4]"', xml)
+    self.assertNotIn('text-selection-start', xml)
+    self.assertNotIn('cursor-position', xml)
+
+  def test_negative_selection_is_not_embedded(self):
+    forest = _fake_forest([
+        FakeNode(
+            text='hello',
+            class_name='android.widget.TextView',
+            text_selection_start=-1,
+            text_selection_end=-1,
+        )
+    ])
+
+    xml = representation_utils.forest_to_raw_xml(forest)
+
+    self.assertIn('bounds="[1,2][3,4]"', xml)
+    self.assertNotIn('text-selection-start', xml)
+    self.assertNotIn('cursor-position', xml)
 
 
 if __name__ == '__main__':

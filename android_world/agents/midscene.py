@@ -3,6 +3,7 @@
 
 
 from android_world.agents import base_agent
+from android_world.env import adb_utils
 from android_world.env import interface
 from android_world.env import representation_utils
 
@@ -150,26 +151,73 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     return result
 
   def _start_dom_server(self):
-    """Starts a background HTTP server that serves the current a11y tree as raw XML."""
+    """Starts a background HTTP server that serves page XML."""
     agent_ref = self
 
     class DomHandler(BaseHTTPRequestHandler):
+      def _write_response(self, status: int, content_type: str, body: str):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.end_headers()
+        self.wfile.write(body.encode('utf-8'))
+
+      def _page_xml_from_adb_dump(self) -> str:
+        try:
+          page_xml = adb_utils.uiautomator_dump(agent_ref.env.controller)
+          if page_xml:
+            return page_xml
+        except Exception as e:
+          agent_ref._formatted_console(
+              'DOM provider adb dump fallback failed: ' + str(e)
+          )
+        return ''
+
+      def _page_xml_from_state(self, state) -> str:
+        if state.forest is None:
+          agent_ref._formatted_console(
+              'DOM provider got empty AccessibilityForwarder forest; falling back to adb dump'
+          )
+          return self._page_xml_from_adb_dump()
+
+        page_xml = representation_utils.forest_to_raw_xml(state.forest)
+        if page_xml:
+          return page_xml
+
+        agent_ref._formatted_console(
+            'DOM provider got empty AccessibilityForwarder XML; falling back to adb dump'
+        )
+        return self._page_xml_from_adb_dump()
+
+      def _get_state_with_retry(self):
+        state = agent_ref.env.get_state()
+        if state.forest is not None:
+          return state
+
+        time.sleep(0.2)
+        retry_state = agent_ref.env.get_state()
+        if retry_state.forest is None:
+          agent_ref._formatted_console(
+              'DOM provider retry still returned empty AccessibilityForwarder forest'
+          )
+        return retry_state
+
+      def _get_page_xml(self) -> str:
+        return self._page_xml_from_state(self._get_state_with_retry())
+
       def do_GET(self):
         try:
-          state = agent_ref.env.get_state()
-          if state.forest is not None:
-            raw_xml = representation_utils.forest_to_raw_xml(state.forest)
+          if self.path == '/context':
+            # Page structure and cursor metadata come from the same
+            # AccessibilityForwarder snapshot. Cursor state is embedded on the
+            # focused editable node as XML attributes.
+            state = self._get_state_with_retry()
+            page_xml = self._page_xml_from_state(state)
+            self._write_response(200, 'text/xml; charset=utf-8', page_xml)
           else:
-            raw_xml = ''
-          self.send_response(200)
-          self.send_header('Content-Type', 'text/xml; charset=utf-8')
-          self.end_headers()
-          self.wfile.write(raw_xml.encode('utf-8'))
+            page_xml = self._get_page_xml()
+            self._write_response(200, 'text/xml; charset=utf-8', page_xml)
         except Exception as e:
-          self.send_response(500)
-          self.send_header('Content-Type', 'text/plain')
-          self.end_headers()
-          self.wfile.write(str(e).encode('utf-8'))
+          self._write_response(500, 'text/plain', str(e))
 
       def log_message(self, format, *args):
         pass  # Suppress default access logs
@@ -177,7 +225,7 @@ class MidsceneAgent(base_agent.EnvironmentInteractingAgent):
     server = HTTPServer(('127.0.0.1', 0), DomHandler)
     port = server.server_address[1]
     self._dom_server = server
-    self._dom_server_url = f'http://127.0.0.1:{port}/dom'
+    self._dom_server_url = f'http://127.0.0.1:{port}/context'
     self._formatted_console(f"DOM provider server started at {self._dom_server_url}")
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
